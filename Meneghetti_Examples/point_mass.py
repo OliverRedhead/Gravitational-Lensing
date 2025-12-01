@@ -5,7 +5,7 @@ class PointMass:
     """
     This class represents a point mass for the purposes of simulating gravitational lensing.
     
-    We assume a "weak lens" where newtonian gravitational potential per mass Phi = -GM/r << c^2 implies Phi/c^2 << 1
+    We assume a "weak lens" where newtonian gravitational potential per mass Phi = -GM/r << c^2 => Phi/c^2 << 1
     and use the born approximation to approximate the grravitational potential along the deflected path
     by the gravitational potential along the un-deflected path (valid for small deflection angles)
     """
