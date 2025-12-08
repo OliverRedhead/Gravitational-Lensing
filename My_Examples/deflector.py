@@ -3,28 +3,81 @@ from numpy import fft
 from astropy.io import fits
 
 class Deflector:
-    def __init__(self, filekappa, pad=False, padwidth=0.5):
+    """
+    Given a convergence map in a FITS file, construct a Deflector object.
+
+    This class computes the gravitational deflection angles from a convergence map.
+
+    Methods
+    -------
+    deflection_map() -> array, array
+        Returns two arrays: deflection in the x direction and y direction.
+
+    image() -> array
+        Returns the convergence map.
+    """
+
+    def __init__(self, filekappa: str, pad: bool = False, padwidth: float = 0.5):
+        """
+        Initialize a Deflector object from a convergence map.
+
+        Parameters
+        ----------
+        filekappa : str
+            Filename or path to the convergence map (FITS file).
+        pad : bool, optional
+            If True, pad the convergence map boundaries (default is False).
+        padwidth : float, optional
+            Width of padding applied to the map if `pad` is True (default is 0.5).
+        """
         self.kappa, self.header = fits.getdata(filekappa, header=True)
+        self.padwidth = padwidth
         if pad:
-            self.pad(padwidth)
+            self.pad()
         self.nx, self.ny = self.kappa.shape
         self.kx, self.ky = self.kernel()
 
-    def pad(self, padwidth):
+
+    def pad(self) -> None:
+        """
+        Pad the convergence map with zeros.
+
+        This ensures that the boundaries are non-periodic for Fourier transforms,
+        which prevents wrap-around artifacts in the calculation.
+
+        Notes
+        -----
+        The amount of padding is determined by `self.padwidth`, which is a fraction
+        of the map size in each dimension.
+        """
         px, py = self.kappa.shape
 
-        pad_x = int(px * padwidth)
-        pad_y = int(py * padwidth)
+        pad_x = int(px * self.padwidth)
+        pad_y = int(py * self.padwidth)
         
         self.kappa = np.pad(
-                self.kappa,
-                ((pad_x, pad_x), (pad_y, pad_y)),
-                mode='constant',
-                constant_values=0
-            )
-
+            self.kappa,
+            ((pad_x, pad_x), (pad_y, pad_y)),
+            mode='constant',
+            constant_values=0
+        )
 
     def kernel(self):
+        """
+        Initialize the kernel array used for convolution with the convergence map.
+
+        The kernel is a vector-valued function:
+
+            K(x) = x / |x|^2 
+
+        where `x` is the 2D position vector in the map.
+
+        Notes
+        -----
+        - The size of the kernel matches the (optionally padded) convergence map.
+        - This ensures that the kernel and the map can be convolved using
+        element-wise multiplication in Fourier space.
+        """
         kx = fft.fftfreq(self.nx).reshape(-1,1)
         ky = fft.fftfreq(self.ny).reshape(1,-1)
 
@@ -36,7 +89,27 @@ class Deflector:
 
         return kx_kernel, ky_kernel
 
-    def deflection_map(self):
+    def deflection_map(self) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Compute the deflection angle maps from the convergence map.
+
+        The deflection is a convolution of the kernel and the convergence map (see Meneghetti notes).
+        We use NumPy's fft library to convolve the two and compute deflection.
+
+        Returns
+        -------
+        alpha_x : ndarray
+            Deflection in the x-direction for each pixel [radians].
+        alpha_y : ndarray
+            Deflection in the y-direction for each pixel [radians].
+
+        Notes
+        -----
+        - The FFT-based computation assumes periodic boundary conditions, 
+        so you may want to pad the map using `self.pad()` to reduce wrap-around artifacts.
+        - The returned arrays are real-valued; the imaginary part from FFT/IFFT is discarded.
+        - The kernel is already in fourier space.
+        """
         kappa_fft = fft.fft2(self.kappa)
 
         alpha_x_fft = kappa_fft * self.kx
@@ -47,5 +120,18 @@ class Deflector:
 
         return alpha_x, alpha_y
 
-    def image(self):
+    def image(self) -> np.ndarray:
+        """
+        Return the convergence map stored in the Deflector object.
+
+        Returns
+        -------
+        kappa : ndarray
+            The 2D array representing the convergence map used for deflection calculations.
+
+        Notes
+        -----
+        - If padding was applied during initialization, this returns the padded map.
+        """
         return self.kappa
+
