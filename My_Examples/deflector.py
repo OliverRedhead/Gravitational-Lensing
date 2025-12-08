@@ -2,67 +2,50 @@ import numpy as np
 from numpy import fft
 from astropy.io import fits
 
-
-class Deflector(object):
-    """
-    This class represents the deflection of a mass distribution. 
-    Given in input surface density (convergence) map "filekappa", this class can calculate the direction and magnitude of deflection.
-    """
-
-    def __init__(self, filekappa, pad=False):
-        self.kappa,self.header = fits.getdata(filekappa, header=True)
+class Deflector:
+    def __init__(self, filekappa, pad=False, padwidth=0.5):
+        self.kappa, self.header = fits.getdata(filekappa, header=True)
+        if pad:
+            self.pad(padwidth)
         self.nx, self.ny = self.kappa.shape
-        if(pad):
-            self.pad()
         self.kx, self.ky = self.kernel()
+
+    def pad(self, padwidth):
+        px, py = self.kappa.shape
+
+        pad_x = int(px * padwidth)
+        pad_y = int(py * padwidth)
+        
+        self.kappa = np.pad(
+                self.kappa,
+                ((pad_x, pad_x), (pad_y, pad_y)),
+                mode='constant',
+                constant_values=0
+            )
 
 
     def kernel(self):
-        x = np.linspace(-0.5, 0.5, self.nx)
-        y = np.linspace(-0.5, 0.5, self.ny)
+        kx = fft.fftfreq(self.nx).reshape(-1,1)
+        ky = fft.fftfreq(self.ny).reshape(1,-1)
 
-        print(x)
+        den = kx**2 + ky**2
+        den += 1e-12
 
-        kx = fft.fftfreq(self.nx)   # frequencies in cycles per pixel
-        ky = fft.fftfreq(self.ny)
+        kx_kernel = -1j * kx / den
+        ky_kernel = -1j * ky / den
 
-        kx, ky = np.meshgrid(x, y)
-        norm = kx**2 + ky**2 + 1e-12
-        kx, ky = kx/norm, ky/norm
-
-        return kx, ky
-
-    
-    def pad(self):
-        """
-        pads boundaries with zeros to make them not periodic - this is a product of the fft
-        """
-        def padwithzeros(vector, pad_width, iaxis, kwargs):
-            vector[:pad_width[0]] = 0
-            vector[-pad_width[1]:] = 0
-            return vector
-        
-        self.kappa = np.lib.pad(self.kappa, self.kappa.shape[0], padwithzeros)
+        return kx_kernel, ky_kernel
 
     def deflection_map(self):
-        """
-        convolves the kernel K and convergence kappa via fft
-        """
-        # perform fftt
-        kappa_fft = fft.rfftn(self.kappa, axes=(0,1))
-        kx_fft= fft.rfftn(self.kx, axes=(0,1), s=self.kappa.shape)
-        ky_fft= fft.rfftn(self.ky, axes=(0,1), s=self.kappa.shape)
+        kappa_fft = fft.fft2(self.kappa)
 
-        # convolve
-        alphafft_x = kappa_fft * kx_fft
-        alphafft_y = kappa_fft * ky_fft
+        alpha_x_fft = kappa_fft * self.kx
+        alpha_y_fft = kappa_fft * self.ky
 
-        # inverse fft (1/pi comes from equation in meneghetti lectues: section 2.5.2)
-        alpha_x = 1/np.pi * fft.irfftn(alphafft_x)
-        alpha_y = 1/np.pi * fft.irfftn(alphafft_y)
+        alpha_x = fft.ifft2(alpha_x_fft).real / np.pi
+        alpha_y = fft.ifft2(alpha_y_fft).real / np.pi
 
         return alpha_x, alpha_y
-    
+
     def image(self):
         return self.kappa
-        
