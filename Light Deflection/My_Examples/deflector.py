@@ -31,6 +31,7 @@ class Deflector:
             Width of padding applied to the map if `pad` is True (default is 0.5).
         """
         self.kappa, self.header = fits.getdata(filekappa, header=True)
+        self.nopad_nx, self.nopad_ny = self.kappa.shape
         self.padwidth = padwidth
         if pad:
             self.pad()
@@ -134,4 +135,24 @@ class Deflector:
         - If padding was applied during initialization, this returns the padded map.
         """
         return self.kappa
+    
+    def map_crop(self, arr : np.ndarray):
+        """
+        Given an array `arr`, this method returns the unpadded version based on the size of the 
+        original convergence map.
+
+        Returns
+        -------
+        cropped_map : ndarray
+            The 2D array representing the deflection map of the original section of space.
+        """
+        px, py = self.kappa.shape
+
+        pad_x = int(px * self.padwidth)//2
+        pad_y = int(py * self.padwidth)//2
+
+        map_crop = arr[pad_y:pad_y+self.nopad_ny,pad_x:pad_x+self.nopad_nx]
+        return map_crop
+
+
 
