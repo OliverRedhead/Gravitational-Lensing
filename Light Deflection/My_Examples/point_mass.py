@@ -24,5 +24,5 @@ class PointMass:
             return alpha_arcsec
         return alpha_rad
 
-		def func(self, a):
-					return a
+		def func(self, a, b):
+return a + b
