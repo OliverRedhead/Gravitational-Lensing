@@ -30,7 +30,7 @@ class Deflector:
         padwidth : float, optional
             Width of padding applied to the map if `pad` is True (default is 0.5).
         """
-        self.kappa, self.header = fits.getdata(filekappa, header=True)
+        self.kappa, self.header = fits.getdata(filekappa, header=True) #type:ignore
         self.nopad_nx, self.nopad_ny = self.kappa.shape
         self.padwidth = padwidth
         if pad:
