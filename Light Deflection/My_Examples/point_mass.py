@@ -23,3 +23,6 @@ class PointMass:
         if(arcseconds):
             return alpha_arcsec
         return alpha_rad
+
+		def func(self, a, b):
+return a + b
