@@ -12,6 +12,61 @@ class EinsteinDeflector(Deflector):
         super().__init__()
         self.theta_E = theta_E
 
+    def get_convergence(self, source: Source):
+        """
+        A getter method for visualising the surface density of the lens.
+
+        Parameters
+        ----------
+        source : Source
+            A source to set the dimensions of the output convergence field
+        """
+        
+        nx, ny, *_ = source.array.shape
+        cx = (nx-1)/2
+        cy = (nx-1)/2
+        
+        x = np.arange(0, nx, 1)
+        y = np.arange(0, ny, 1)
+        X, Y = np.meshgrid(x,y, indexing='xy')
+
+        Rx = X - cx
+        Ry = Y - cy
+        theta = np.sqrt(Rx**2 + Ry**2)
+        theta[theta == 0] = 1e-6
+
+        kappa = self.theta_E / (2 * theta)
+
+        return kappa
+    
+    def get_potential(self, source: Source):
+        """
+        A getter method for visualising the lensing potential of the lens.
+
+        Parameters
+        ----------
+        source : Source
+            A source to set the dimensions of the output potential field
+        """
+        
+        nx, ny, *_ = source.array.shape
+        cx = (nx-1)/2
+        cy = (nx-1)/2
+        
+        x = np.arange(0, nx, 1)
+        y = np.arange(0, ny, 1)
+        X, Y = np.meshgrid(x,y, indexing='xy')
+
+        Rx = X - cx
+        Ry = Y - cy
+        theta = np.sqrt(Rx**2 + Ry**2)
+        theta[theta == 0] = 1e-6
+
+        kappa = self.theta_E * theta
+
+        return kappa
+    
+
     def get_image(self, source : Source):
         """
         Calculates the deflection of the source given the Einstein radius of the lens using the lensing equation.
