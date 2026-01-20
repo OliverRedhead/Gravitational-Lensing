@@ -8,15 +8,8 @@ class EinsteinDeflector(Deflector):
     A class to calculate the deflection of an isothermal sphere.
     """
 
-    def __init__(self, theta_E : float) -> None:
-        """
-        intialises a Deflector instance
-
-        Parameters
-        ----------
-        theta_E : float
-            A float to specify the Einstein radius of the respective deflector
-        """
+    def __init__(self, theta_E: float) -> None:
+        super().__init__()
         self.theta_E = theta_E
 
     def get_image(self, source : Source):
