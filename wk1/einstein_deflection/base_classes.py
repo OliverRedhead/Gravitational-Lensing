@@ -7,6 +7,30 @@ class Source:
 
     def get_source(self) -> np.ndarray:
         return self.array
+
+    def pad(self, pad):
+        arr = self.array
+
+        if arr.ndim == 2:
+            # Grayscale image (H, W)
+            H, W = arr.shape
+            padded = np.zeros((H + 2*pad, W + 2*pad))
+            padded[pad:pad+H, pad:pad+W] = arr
+
+        elif arr.ndim == 3:
+            # RGB image (H, W, 3)
+            H, W, C = arr.shape # type:ignore
+            assert C == 3
+
+            padded = np.zeros((H + 2*pad, W + 2*pad, 3))
+            padded[pad:pad+H, pad:pad+W, :] = arr
+            padded = padded / np.max(padded)
+
+        else:
+            raise ValueError("Array must be 2D (grayscale) or 3D (RGB)")
+
+        self.array = padded
+
     
 
 

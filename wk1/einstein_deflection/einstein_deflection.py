@@ -31,17 +31,13 @@ class EinsteinDeflector(Deflector):
 
         src = source.get_source()
         image = np.zeros_like(src)
-        nx, ny = src.shape
+        nx, ny , *others = src.shape
 
         cx = (nx - 1)/2
         cy = (ny - 1)/2
 
         for y in range(ny):
             for x in range(nx):
-
-                im_val = src[y,x]
-                if(im_val == 0):
-                    continue
 
                 rx = x - cx
                 ry = y - cy
@@ -55,7 +51,7 @@ class EinsteinDeflector(Deflector):
                 beta_x = round(x - alpha_x)
                 beta_y = round(y - alpha_y)
 
-                image[beta_y, beta_x] += im_val
+                image[y,x] += src[beta_y, beta_x]
 
         self.image = image
         return image
