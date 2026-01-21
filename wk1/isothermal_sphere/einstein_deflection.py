@@ -77,30 +77,32 @@ class EinsteinDeflector(Deflector):
             The source plane to be lensed
         """
 
-        src = source.get_source()
-        image = np.zeros_like(src)
-        nx, ny , *others = src.shape
-
+        src = source.array
+        nx, ny, *_ = src.shape
+    
         cx = (nx - 1)/2
         cy = (ny - 1)/2
 
-        for y in range(ny):
-            for x in range(nx):
+        x = np.arange(0, nx, 1)
+        y = np.arange(0, ny, 1)
+        X, Y = np.meshgrid(x, y, indexing="xy")
 
-                rx = x - cx
-                ry = y - cy
-                r = np.sqrt(rx**2 + ry**2)
-                if(r == 0):
-                    r = 1e-6
-                
-                alpha_x = self.theta_E * rx / r
-                alpha_y = self.theta_E * ry / r
+        Rx = X - cx
+        Ry = Y - cy
+        R = np.sqrt(Rx**2 + Ry**2)
+        R[R==0] = 1e-6
 
-                beta_x = round(x - alpha_x)
-                beta_y = round(y - alpha_y)
+        alpha_x = self.theta_E * Rx/R 
+        alpha_y = self.theta_E * Ry/R 
 
-                image[y,x] += src[beta_y, beta_x]
+        beta_x = np.rint(X - alpha_x).astype(int)
+        beta_y = np.rint(Y - alpha_y).astype(int)
 
-        self.image = image
+        beta_x = np.clip(beta_x, 0, nx - 1)
+        beta_y = np.clip(beta_y, 0, ny - 1)
+
+        image = src[beta_y, beta_x]
+
         return image
+
 
