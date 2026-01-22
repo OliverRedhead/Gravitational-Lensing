@@ -133,7 +133,6 @@ class PIEMD(Deflector):
 
         return psi_1 + psi_2
 
-
     def get_image(self, source: Source) -> np.ndarray:
         src = source.array
         nx, ny, *_ = src.shape
