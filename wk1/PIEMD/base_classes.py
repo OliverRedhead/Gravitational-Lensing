@@ -1,4 +1,5 @@
 import numpy as np
+import matplotlib.pyplot as plt
 
 class Source:
 
@@ -71,10 +72,68 @@ class DiskSource(Source):
 
 
 
-
-
 class Deflector:
 
     def __init__(self) -> None:
         pass
 
+    def get_image(self, source: Source) -> np.ndarray:
+        return source.array
+    
+    def get_convergence(self, source: Source) -> np.ndarray:
+        return np.zeros_like(source.array)
+    
+    def get_potential(self, source: Source) -> np.ndarray:
+        return np.zeros_like(source.array)
+
+
+class LensingSystem:
+
+    def __init__(self, source: Source, deflector: Deflector) -> None:
+        self.src = source
+        self.df = deflector
+
+    def align_system(self, cx: int = 0, cy: int = 0):
+        """
+        Re-center the source array so that the pixel at (cx, cy) in the original
+        array appears at the center of a new square array. The new array side
+        length is chosen so the original array fits without clipping.
+
+        Updates self.src.array to the new padded/shifted array and also returns it.
+        """
+        src_arr = self.src.array
+        # src_arr shape: (H, W) or (H, W, C)
+        nx, ny, *_ = src_arr.shape  # nx = rows (height), ny = cols (width)
+
+        if not ((0 <= cx < nx) and (0 <= cy < ny)):
+            raise ValueError("cx and cy must be within source array bounds")
+        
+        # determine required half-size so that (cx, cy) can be centered
+        lx = np.maximum(cx, (nx - 1) - cx)
+        ly = np.maximum(cy, (ny - 1) - cy)
+        l = int(np.maximum(lx, ly))
+
+        # prepare new square array, preserving channels and dtype
+        side = 2 * l + 1
+        arr = np.zeros((side, side), dtype=src_arr.dtype)
+
+        # compute destination slice so that original (cx, cy) moves to (l, l)
+        dest_row0 = l - cx
+        dest_col0 = l - cy
+        dest_row1 = dest_row0 + nx
+        dest_col1 = dest_col0 + ny
+
+        arr[dest_row0:dest_row1, dest_col0:dest_col1, ...] = src_arr
+
+        # update the source array and return the aligned array
+        self.src.array = arr
+        return arr
+    
+    def get_image(self):
+        return self.df.get_image(self.src)
+    
+    def get_convergence(self):
+        return self.df.get_convergence(self.src)
+    
+    def get_potential(self):
+        return self.df.get_potential(self.src)
