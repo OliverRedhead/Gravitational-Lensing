@@ -1,5 +1,6 @@
 import numpy as np
 from base_classes import Deflector, Source
+from scipy.ndimage import map_coordinates
 
 class PIEMD(Deflector):
 
@@ -15,6 +16,8 @@ class PIEMD(Deflector):
 
     - External Shear (XS) does not rotate with the mass distribution. I.e. its orientation is independant of phi. 
     This may be changed in future but for now is how I'm doing it.
+
+    - Mapping coordinate uses bilinear spline interpoltion from scipy.ndimage.map_coordinates. Order = 1 is an arbitrary choice for now
 
     """
 
@@ -65,8 +68,8 @@ class PIEMD(Deflector):
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
 
-        x = np.arange(0, nx)
-        y = np.arange(0, ny)
+        x = np.arange(0, nx, 1)
+        y = np.arange(0, ny, 1)
         X, Y = np.meshgrid(x, y, indexing="xy")
 
         Rx = X - cx
@@ -89,8 +92,8 @@ class PIEMD(Deflector):
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
 
-        x = np.arange(0, nx)
-        y = np.arange(0, ny)
+        x = np.arange(0, nx, 1)
+        y = np.arange(0, ny, 1)
         X, Y = np.meshgrid(x, y, indexing="xy")
 
         Rx = X - cx
@@ -132,6 +135,7 @@ class PIEMD(Deflector):
         psi_2 = self.g1 * (Rx**2 - Ry**2) + 2 * self.g2 * Rx * Ry       # external shear 
 
         return psi_1 + psi_2
+    
 
     def get_image(self, source: Source) -> np.ndarray:
         src = source.array
@@ -140,8 +144,8 @@ class PIEMD(Deflector):
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
 
-        x = np.arange(0, nx)
-        y = np.arange(0, ny)
+        x = np.arange(0, nx, 1)
+        y = np.arange(0, ny, 1)
         X, Y = np.meshgrid(x, y, indexing="xy")
 
         Rx = X - cx
@@ -166,11 +170,8 @@ class PIEMD(Deflector):
         else:
             a = np.sqrt(1 - self.e**2)
 
-            denom_x = Re + self.s
-            denom_y = Re + self.e**2 * self.s
-
-            denom_x = np.maximum(denom_x, eps)
-            denom_y = np.maximum(denom_y, eps)
+            denom_x = np.maximum(Re + self.s, eps)
+            denom_y = np.maximum( Re + self.e**2 * self.s, eps)
 
             u_x = a * Rxp / denom_x
             u_y = a * Ryp / denom_y
@@ -183,12 +184,16 @@ class PIEMD(Deflector):
             alpha_y = self.theta_E * (1 / a) * np.arctanh(u_y) \
                 + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
 
+        beta_x = X - alpha_x
+        beta_y = Y - alpha_y
 
-        beta_x = np.rint(X - alpha_x).astype(int)
-        beta_y = np.rint(Y - alpha_y).astype(int)
+        # NOTE not clipping as hopefully scipy.map_coordinates does it for me
+        # beta_x = np.clip(beta_x, 0, nx - 1)
+        # beta_y = np.clip(beta_y, 0, ny - 1)
 
-        beta_x = np.clip(beta_x, 0, nx - 1)
-        beta_y = np.clip(beta_y, 0, ny - 1)
+        coords = np.array([beta_y.ravel(), beta_x.ravel()])  # note: y first
+        # NOTE using bilinear (order=1) spline interpolation - an arbitrary choice for now
+        image = map_coordinates(src, coords, order=1, mode='nearest').reshape(nx, ny)
 
-        image = src[beta_y, beta_x]
         return image
+        
