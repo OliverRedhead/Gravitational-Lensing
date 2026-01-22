@@ -1,4 +1,5 @@
 import numpy as np
+import jax.numpy as jnp
 from base_classes import Deflector, Source
 from scipy.ndimage import map_coordinates
 
@@ -21,7 +22,7 @@ class PIEMD(Deflector):
 
     """
 
-    def __init__(self, theta_E: float, *, e=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0) -> None:
+    def __init__(self, theta_E: float, *, q=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0) -> None:
         """
         Initialise a pseudo-isothermal elliptical mas distribution (PIEMD) deflector class.
         
@@ -31,7 +32,7 @@ class PIEMD(Deflector):
             Einstein radius used to scale the size of the deflector.
 
         e : float = 1.0
-            ellipticity parameter determines how elliptical the resulting convergence map is. 
+            axis ratio parameter determines how elliptical the resulting convergence map is. 
             A value in (0, 1] where 1 is circular. 
         
         s : float = 0.0
@@ -51,10 +52,10 @@ class PIEMD(Deflector):
         super().__init__()
         self.theta_E = theta_E
 
-        if e > 1 or e <= 0:
-            raise ValueError(f"Ellipticity must be in the range (0, 1], not: e={e}")
+        if q > 1 or q <= 0:
+            raise ValueError(f"Axis ratio must be in the range (0, 1], not: q={q}")
         
-        self.e = e
+        self.q = q
         self.s = s
         self.phi = phi
 
@@ -63,7 +64,7 @@ class PIEMD(Deflector):
 
     def get_convergence(self, source: Source):
         src = source.array
-        nx, ny, *_ = src.shape
+        ny, nx, *_ = src.shape
 
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
@@ -79,7 +80,7 @@ class PIEMD(Deflector):
         Ryp = -np.sin(self.phi) * Rx + np.cos(self.phi) * Ry
 
         Re = np.maximum(
-            np.sqrt(self.e**2 * (self.s**2 + Rxp**2) + Ryp**2),
+            np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2),
             1e-12
         )
 
@@ -87,7 +88,7 @@ class PIEMD(Deflector):
 
     def get_potential(self, source: Source):
         src = source.array
-        nx, ny, *_ = src.shape
+        ny, nx, *_ = src.shape
 
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
@@ -103,23 +104,23 @@ class PIEMD(Deflector):
         Ryp = -np.sin(self.phi) * Rx + np.cos(self.phi) * Ry
 
         Re = np.maximum(
-            np.sqrt(self.e**2 * (self.s**2 + Rxp**2) + Ryp**2),
+            np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2),
             1e-12
         )
 
-        Rf = np.sqrt((1-self.e**2) * Rxp**2 + (Re + self.s)**2) 
+        Rf = np.sqrt((1-self.q**2) * Rxp**2 + (Re + self.s)**2) 
 
         eps = 1e-12
-        if abs(1 - self.e) < 1e-6:
+        if abs(1 - self.q) < 1e-6:
             rc = np.sqrt(Rxp**2 + Ryp**2 + self.s**2)
             alpha_x = self.theta_E * Rxp / (rc + self.s + eps)
             alpha_y = self.theta_E * Ryp / (rc + self.s + eps)
         
         else:
-            a = np.sqrt(1 - self.e**2)
+            a = np.sqrt(1 - self.q**2)
 
             denom_x = np.maximum(Re + self.s, eps)
-            denom_y = np.maximum(Re + self.e**2 * self.s, eps)
+            denom_y = np.maximum(Re + self.q**2 * self.s, eps)
 
             u_x = a * Rxp / denom_x
             u_y = a * Ryp / denom_y
@@ -139,7 +140,13 @@ class PIEMD(Deflector):
 
     def get_image(self, source: Source) -> np.ndarray:
         src = source.array
-        nx, ny, *_ = src.shape
+        ny, nx, *_ = src.shape
+
+        nc = 1
+        if src.ndim == 2:
+            ny, nx = src.shape
+        if src.ndim == 3:
+            ny, nx, nc = src.shape # type:ignore
 
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
@@ -157,10 +164,10 @@ class PIEMD(Deflector):
 
         eps = 1e-12
 
-        Re = np.sqrt(self.e**2 * (self.s**2 + Rxp**2) + Ryp**2)
+        Re = np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2)
         Re = np.maximum(Re, eps)
 
-        if abs(1 - self.e) < 1e-6: # in the limit of e -> 1, use sepcial case for isothermal
+        if abs(1 - self.q) < 1e-6: # in the limit of e -> 1, use sepcial case for isothermal
             rc = np.sqrt(Rxp**2 + Ryp**2 + self.s**2)
             alpha_x = self.theta_E * Rxp / (rc + self.s + eps) \
                 + 2 * self.g1 * Rx + 2 * self.g2 * Ry
@@ -168,10 +175,10 @@ class PIEMD(Deflector):
                 + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
         
         else:
-            a = np.sqrt(1 - self.e**2)
+            a = np.sqrt(1 - self.q**2)
 
             denom_x = np.maximum(Re + self.s, eps)
-            denom_y = np.maximum( Re + self.e**2 * self.s, eps)
+            denom_y = np.maximum( Re + self.q**2 * self.s, eps)
 
             u_x = a * Rxp / denom_x
             u_y = a * Ryp / denom_y
@@ -179,21 +186,81 @@ class PIEMD(Deflector):
             # clip to valid domain for arctanh
             u_y = np.clip(u_y, -1 + 1e-12, 1 - 1e-12)
 
-            alpha_x = self.theta_E * (1 / a) * np.arctan(u_x) \
-                + 2 * self.g1 * Rx + 2 * self.g2 * Ry
-            alpha_y = self.theta_E * (1 / a) * np.arctanh(u_y) \
-                + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
+            alpha_xp = self.theta_E * (1 / a) * np.arctan(u_x)
+            alpha_yp = self.theta_E * (1 / a) * np.arctanh(u_y)
+
+            # rotate deflection back to image (x,y) coords (inverse rotation)
+            alpha_x_rot = np.cos(self.phi) * alpha_xp - np.sin(self.phi) * alpha_yp
+            alpha_y_rot = np.sin(self.phi) * alpha_xp + np.cos(self.phi) * alpha_yp
+
+            # add external shear in image coords
+            alpha_x = alpha_x_rot + 2 * self.g1 * Rx + 2 * self.g2 * Ry
+            alpha_y = alpha_y_rot + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
+            
 
         beta_x = X - alpha_x
         beta_y = Y - alpha_y
+        
+        # using bilinear (order=1) spline interpolation - an arbitrary choice for now
+        coords = np.array([beta_y.ravel(), beta_x.ravel()])  
 
-        # NOTE not clipping as hopefully scipy.map_coordinates does it for me
-        # beta_x = np.clip(beta_x, 0, nx - 1)
-        # beta_y = np.clip(beta_y, 0, ny - 1)
-
-        coords = np.array([beta_y.ravel(), beta_x.ravel()])  # note: y first
-        # NOTE using bilinear (order=1) spline interpolation - an arbitrary choice for now
-        image = map_coordinates(src, coords, order=1, mode='nearest').reshape(nx, ny)
+        if nc == 1:
+            image = map_coordinates(src, coords, order=1, mode='nearest').reshape(ny, nx)
+        else:
+            image = np.zeros((ny, nx, nc), dtype=src.dtype)
+            for c in range(nc):
+                image[:, :, c] = map_coordinates(src[:, :, c], coords, order=1, mode='nearest').reshape(ny, nx)
 
         return image
         
+
+    def map(self, source: Source, x: float, y: float):
+        """
+        given a coordinate on image plane (x,y), returns corresponding point on source plane.
+        """
+        src = source.array
+        ny, nx, *_ = src.shape
+
+        cx = (nx - 1) / 2
+        cy = (ny - 1) / 2
+
+        # image->relative coordinates
+        Rx = x - cx
+        Ry = y - cy
+
+        # rotate into lens principal axes
+        Rxp =  np.cos(self.phi) * Rx + np.sin(self.phi) * Ry
+        Ryp = -np.sin(self.phi) * Rx + np.cos(self.phi) * Ry
+
+        eps = 1e-12
+        Re = np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2)
+        Re = max(Re, eps)
+
+        if abs(1 - self.q) < 1e-6:
+            rc = np.sqrt(Rxp**2 + Ryp**2 + self.s**2)
+            alpha_xp = self.theta_E * Rxp / (rc + self.s + eps)
+            alpha_yp = self.theta_E * Ryp / (rc + self.s + eps)
+        else:
+            a = np.sqrt(max(0.0, 1 - self.q**2))
+            denom_x = max(Re + self.s, eps)
+            denom_y = max(Re + self.q**2 * self.s, eps)
+
+            u_x = a * Rxp / denom_x
+            u_y = a * Ryp / denom_y
+            u_y = np.clip(u_y, -1 + 1e-12, 1 - 1e-12)
+
+            alpha_xp = self.theta_E * (1 / a) * np.arctan(u_x)
+            alpha_yp = self.theta_E * (1 / a) * np.arctanh(u_y)
+
+        # rotate deflection back to image coords
+        alpha_x = np.cos(self.phi) * alpha_xp - np.sin(self.phi) * alpha_yp
+        alpha_y = np.sin(self.phi) * alpha_xp + np.cos(self.phi) * alpha_yp
+
+        # add external shear (defined in image coords)
+        alpha_x += 2 * self.g1 * Rx + 2 * self.g2 * Ry
+        alpha_y += 2 * self.g2 * Rx - 2 * self.g1 * Ry
+
+        beta_x = x - alpha_x
+        beta_y = y - alpha_y
+
+        return beta_x, beta_y
