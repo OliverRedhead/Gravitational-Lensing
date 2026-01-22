@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 
 class Source:
 
-    def __init__(self, array : np.ndarray) -> None:
+    def __init__(self, array : np.ndarray = np.array([])) -> None:
         self.array = array
 
     def get_source(self) -> np.ndarray:
@@ -43,8 +43,6 @@ class Source:
         return X,Y
 
     
-
-
 class DiskSource(Source):
 
     """
@@ -84,17 +82,22 @@ class DiskSource(Source):
 
 class Deflector:
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, source: Source = Source()) -> None:
+        self.source = source
+        self.ny, self.nx, *_ = self.source.array.shape
 
-    def get_image(self, source: Source) -> np.ndarray:
-        return source.array
+    def get_image(self) -> np.ndarray:
+        return self.source.array
     
-    def get_convergence(self, source: Source) -> np.ndarray:
-        return np.zeros_like(source.array)
+    def get_convergence(self) -> np.ndarray:
+        return np.zeros_like(self.source.array)
     
-    def get_potential(self, source: Source) -> np.ndarray:
-        return np.zeros_like(source.array)
+    def get_potential(self) -> np.ndarray:
+        return np.zeros_like(self.source.array)
+    
+    def set_source(self, new_source: Source):
+        self.source = new_source
+        self.ny, self.nx = self.source.array.shape
 
 
 class LensingSystem:
@@ -140,10 +143,10 @@ class LensingSystem:
         return arr
     
     def get_image(self):
-        return self.df.get_image(self.src)
+        return self.df.get_image()
     
     def get_convergence(self):
-        return self.df.get_convergence(self.src)
+        return self.df.get_convergence()
     
     def get_potential(self):
-        return self.df.get_potential(self.src)
+        return self.df.get_potential()

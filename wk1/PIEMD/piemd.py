@@ -29,7 +29,7 @@ class PIEMD(Deflector):
 
     """
 
-    def __init__(self, theta_E: float, *, q=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0) -> None:
+    def __init__(self, source: Source, theta_E: float, *, q=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0) -> None:
         """
         Initialise a pseudo-isothermal elliptical mas distribution (PIEMD) deflector class.
         
@@ -56,7 +56,7 @@ class PIEMD(Deflector):
             External shear parameter in x=y x=-y direction
         """
 
-        super().__init__()
+        super().__init__(source)
         self.theta_E = theta_E
 
         if q > 1 or q <= 0:
@@ -69,9 +69,8 @@ class PIEMD(Deflector):
         self.g1 = gamma_1
         self.g2 = gamma_2
 
-    def get_convergence(self, source: Source):
-        src = source.array
-        ny, nx, *_ = src.shape
+    def get_convergence(self):
+        nx, ny = self.nx, self.ny
 
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
@@ -93,9 +92,8 @@ class PIEMD(Deflector):
 
         return self.theta_E / (2 * Re)
 
-    def get_potential(self, source: Source):
-        src = source.array
-        ny, nx, *_ = src.shape
+    def get_potential(self):
+        nx, ny = self.nx, self.ny
 
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
@@ -145,11 +143,10 @@ class PIEMD(Deflector):
         return psi_1 + psi_2
     
 
-    def get_image(self, source: Source) -> np.ndarray:
-        src = source.array
-        ny, nx, *_ = src.shape
+    def get_image(self) -> np.ndarray:
+        src = self.source.array
+        nx, ny, nc = self.nx, self.ny, 1
 
-        nc = 1
         if src.ndim == 2:
             ny, nx = src.shape
         if src.ndim == 3:
@@ -221,14 +218,13 @@ class PIEMD(Deflector):
         return image
         
 
-    def map(self, source: Source, r: tuple[float, float]):
+    def map(self, r):
         """
         given a coordinate on image plane (x,y), returns corresponding point on source plane.
         """
+        
         x, y = r
-
-        src = source.array
-        ny, nx, *_ = src.shape
+        nx, ny = self.nx, self.ny
 
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
@@ -274,10 +270,10 @@ class PIEMD(Deflector):
 
         return beta_x, beta_y
     
-    def map_jax(self, source, r):
+    def map_jax(self, r):
         
         x,y = r[0], r[1]
-        ny, nx, *_ = source.array.shape
+        nx, ny, *_ = self.nx, self.ny
 
         cx = (nx - 1) / 2.0
         cy = (ny - 1) / 2.0
@@ -328,37 +324,44 @@ class PIEMD(Deflector):
 
         return jnp.array([beta_x, beta_y])
 
-    def get_magnification(self, source: Source):
+    def get_magnification(self):
 
         def map_only_r(r):
-            return self.map_jax(source, r)
+            return self.map_jax(r)
 
         jac_map = jax.jacfwd(map_only_r)
 
         # Optional but highly recommended:
         jac_map = jax.jit(jac_map)
 
-        X,Y = source.get_indices()
+        X,Y = self.source.get_indices()
         R = np.stack((X, Y), axis=-1).astype(np.float32)   # shape (nx, ny, 2)
         R_flat = R.reshape(-1, 2)
 
-        map_per_point = lambda r: self.map_jax(source, r)
+        map_per_point = lambda r: self.map_jax(r)
         A_flat = jax.vmap(jax.jacfwd(map_per_point))(R_flat)
         A = A_flat.reshape(X.shape[0], X.shape[1], 2, 2)
 
         a = A[...,0,0]*A[...,1,1] - A[...,1,0]*A[...,0,1] # inverse magnification
         return a
     
-    def get_critical_curves(self, source: Source):
-        
-        a = self.get_magnification(source)
+    def get_critical_curves(self):
+        a = self.get_magnification()
+        fig = plt.figure()
         cs = plt.contour(a, levels=[0])
+        plt.close(fig)
 
         segments = cs.allsegs
-        
-        # TODO turn this into something useable
+        lvl0segs = segments[0]
 
-        pass
+        return lvl0segs
+    
+    def get_caustics(self):
+        curves = self.get_critical_curves()
+        mapped_curves = [np.array([self.map(point) for point in polygon]) for polygon in curves]
+        return mapped_curves
+
+
 
 
 
