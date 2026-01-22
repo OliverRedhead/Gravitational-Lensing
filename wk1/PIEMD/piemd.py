@@ -7,6 +7,15 @@ class PIEMD(Deflector):
     Class for calculating and visualising a pseudo-isothermal elliptical mas distribution (PIEMD).
     On initialisation, can specify einstein radius, ellipticity, angle of principle axes and 
     external shear parameters
+
+    Notes
+    -----
+    - In the limit of e -> 1 we use a different expression for finding deflection angles as the general case. 
+    Using small angle approximations, we evaluate the limits.
+
+    - External Shear (XS) does not rotate with the mass distribution. I.e. its orientation is independant of phi. 
+    This may be changed in future but for now is how I'm doing it.
+
     """
 
     def __init__(self, theta_E: float, *, e=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0) -> None:
@@ -106,11 +115,8 @@ class PIEMD(Deflector):
         else:
             a = np.sqrt(1 - self.e**2)
 
-            denom_x = Re + self.s
-            denom_y = Re + self.e**2 * self.s
-
-            denom_x = np.maximum(denom_x, eps)
-            denom_y = np.maximum(denom_y, eps)
+            denom_x = np.maximum(Re + self.s, eps)
+            denom_y = np.maximum(Re + self.e**2 * self.s, eps)
 
             u_x = a * Rxp / denom_x
             u_y = a * Ryp / denom_y
@@ -121,10 +127,11 @@ class PIEMD(Deflector):
             alpha_x = self.theta_E * (1 / a) * np.arctan(u_x)
             alpha_y = self.theta_E * (1 / a) * np.arctanh(u_y)
 
+        # NOTE external shear (psi_2) does NOT rotate with the mass distribution
         psi_1 =  Rxp * alpha_x + Ryp * alpha_y - self.s * np.log(Rf) 
-        psi_2 = self.g1 * (Rx**2 - Ry**2) + 2 * self.g2 * Rx * Ry       # external shear
+        psi_2 = self.g1 * (Rx**2 - Ry**2) + 2 * self.g2 * Rx * Ry       # external shear 
 
-        return self.theta_E * psi_1 + psi_2
+        return psi_1 + psi_2
 
 
     def get_image(self, source: Source) -> np.ndarray:
