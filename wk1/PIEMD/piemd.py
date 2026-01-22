@@ -3,7 +3,13 @@ from base_classes import Deflector, Source
 
 class PIEMD(Deflector):
 
-    def __init__(self, theta_E: float, e=1.0, s=0.0, phi=0.0) -> None:
+    """
+    Class for calculating and visualising a pseudo-isothermal elliptical mas distribution (PIEMD).
+    On initialisation, can specify einstein radius, ellipticity, angle of principle axes and 
+    external shear parameters
+    """
+
+    def __init__(self, theta_E: float, *, e=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0) -> None:
         """
         Initialise a pseudo-isothermal elliptical mas distribution (PIEMD) deflector class.
         
@@ -22,6 +28,12 @@ class PIEMD(Deflector):
         phi : float = 0.0
             Principal axis angle. This paramater determines the angle of the principal axes of the ellipse to the x and y axes.
             Measured in radians counter-clockwise.
+
+        gamma_1 : float = 0.0
+            External shear parameter in xy direction
+
+        gamma_2 : float = 0.0
+            External shear parameter in x=y x=-y direction
         """
 
         super().__init__()
@@ -33,6 +45,9 @@ class PIEMD(Deflector):
         self.e = e
         self.s = s
         self.phi = phi
+
+        self.g1 = gamma_1
+        self.g2 = gamma_2
 
     def get_convergence(self, source: Source):
         src = source.array
@@ -100,15 +115,16 @@ class PIEMD(Deflector):
             u_x = a * Rxp / denom_x
             u_y = a * Ryp / denom_y
 
-            # clip to valid domain for arctanh
+            # clip to valid domain for arctanh ( for floating point errors)
             u_y = np.clip(u_y, -1 + 1e-12, 1 - 1e-12)
 
             alpha_x = self.theta_E * (1 / a) * np.arctan(u_x)
             alpha_y = self.theta_E * (1 / a) * np.arctanh(u_y)
 
-        psi =  Rxp * alpha_x + Ryp * alpha_y - self.s * np.log(Rf)
+        psi_1 =  Rxp * alpha_x + Ryp * alpha_y - self.s * np.log(Rf) 
+        psi_2 = self.g1 * (Rx**2 - Ry**2) + 2 * self.g2 * Rx * Ry       # external shear
 
-        return self.theta_E * psi
+        return self.theta_E * psi_1 + psi_2
 
 
     def get_image(self, source: Source) -> np.ndarray:
@@ -134,10 +150,12 @@ class PIEMD(Deflector):
         Re = np.sqrt(self.e**2 * (self.s**2 + Rxp**2) + Ryp**2)
         Re = np.maximum(Re, eps)
 
-        if abs(1 - self.e) < 1e-6:
+        if abs(1 - self.e) < 1e-6: # in the limit of e -> 1, use sepcial case for isothermal
             rc = np.sqrt(Rxp**2 + Ryp**2 + self.s**2)
-            alpha_x = self.theta_E * Rxp / (rc + self.s + eps)
-            alpha_y = self.theta_E * Ryp / (rc + self.s + eps)
+            alpha_x = self.theta_E * Rxp / (rc + self.s + eps) \
+                + 2 * self.g1 * Rx + 2 * self.g2 * Ry
+            alpha_y = self.theta_E * Ryp / (rc + self.s + eps) \
+                + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
         
         else:
             a = np.sqrt(1 - self.e**2)
@@ -154,8 +172,10 @@ class PIEMD(Deflector):
             # clip to valid domain for arctanh
             u_y = np.clip(u_y, -1 + 1e-12, 1 - 1e-12)
 
-            alpha_x = self.theta_E * (1 / a) * np.arctan(u_x)
-            alpha_y = self.theta_E * (1 / a) * np.arctanh(u_y)
+            alpha_x = self.theta_E * (1 / a) * np.arctan(u_x) \
+                + 2 * self.g1 * Rx + 2 * self.g2 * Ry
+            alpha_y = self.theta_E * (1 / a) * np.arctanh(u_y) \
+                + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
 
 
         beta_x = np.rint(X - alpha_x).astype(int)
