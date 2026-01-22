@@ -31,6 +31,16 @@ class Source:
             raise ValueError("Array must be 2D (grayscale) or 3D (RGB)")
 
         self.array = padded
+    
+    def get_indices(self):
+        ny, nx, *_ = self.array.shape
+
+        x = np.arange(0, nx, 1)
+        y = np.arange(0, ny, 1)
+
+        X, Y = np.meshgrid(x,y)
+
+        return X,Y
 
     
 
