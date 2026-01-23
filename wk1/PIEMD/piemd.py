@@ -141,7 +141,6 @@ class PIEMD(Deflector):
         psi_2 = self.g1 * (Rx**2 - Ry**2) + 2 * self.g2 * Rx * Ry       # external shear 
 
         return psi_1 + psi_2
-    
 
     def get_image(self) -> np.ndarray:
         src = self.source.array
@@ -216,7 +215,6 @@ class PIEMD(Deflector):
                 image[:, :, c] = map_coordinates(src[:, :, c], coords, order=1, mode='nearest').reshape(ny, nx)
 
         return image
-        
 
     def map(self, r):
         """
@@ -361,6 +359,54 @@ class PIEMD(Deflector):
         mapped_curves = [np.array([self.map(point) for point in polygon]) for polygon in curves]
         return mapped_curves
 
+    def plot_source(self, *, critical_curves=False, caustics=False, 
+                    convergence=False, potential=False, image=True):
+        
+        if image:
+            cbar = plt.imshow(self.source.array, cmap='inferno', origin='lower')
+            plt.colorbar(cbar)
+
+        if convergence:
+            plt.contour(self.get_convergence())
+
+        if potential:
+            plt.contour(self.get_potential())
+
+        if(critical_curves):
+            for curve in self.get_critical_curves():
+                plt.plot(curve[:,0], curve[:,1], '-', c='red')
+
+        if(caustics):
+            for curve in self.get_caustics():
+                plt.plot(curve[:,0], curve[:,1], '-', c='orange')
+                
+        plt.show()
+        return
+    
+    def plot_image(self, *, critical_curves=False, caustics=False, 
+                    convergence=False, potential=False, image=True):
+
+        if image:
+            cbar = plt.imshow(self.get_image(), cmap='inferno', origin='lower')
+            plt.colorbar(cbar)
+
+        if convergence:
+            plt.contour(self.get_convergence())
+
+        if potential:
+            plt.contour(self.get_potential())
+
+        if(critical_curves):
+            for curve in self.get_critical_curves():
+                plt.plot(curve[:,0], curve[:,1], '-', c='red')
+
+        if(caustics):
+            for curve in self.get_caustics():
+                plt.plot(curve[:,0], curve[:,1], '-', c='orange')
+                
+        plt.show()
+        return
+        
 
 
 

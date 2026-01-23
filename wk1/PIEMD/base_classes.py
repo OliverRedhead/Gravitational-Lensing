@@ -109,7 +109,7 @@ class Deflector:
         """
         src_arr = self.source.array
         # src_arr shape: (H, W) or (H, W, C)
-        nx, ny, *_ = src_arr.shape  # nx = rows (height), ny = cols (width)
+        nx, ny, *rest = src_arr.shape  # rest = [] or [C]
 
         if not ((0 <= cx < nx) and (0 <= cy < ny)):
             raise ValueError("cx and cy must be within source array bounds")
@@ -121,7 +121,8 @@ class Deflector:
 
         # prepare new square array, preserving channels and dtype
         side = 2 * l + 1
-        arr = np.zeros((side, side), dtype=src_arr.dtype)
+        new_shape = (side, side, *rest)  # (side, side) or (side, side, C)
+        arr = np.zeros(new_shape, dtype=src_arr.dtype)
 
         # compute destination slice so that original (cx, cy) moves to (l, l)
         dest_row0 = l - cx
@@ -133,5 +134,6 @@ class Deflector:
 
         # update the source array and return the aligned array
         self.source.array = arr
+        self.ny, self.nx, *_ = arr.shape
         return arr
-
+    
