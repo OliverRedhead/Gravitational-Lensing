@@ -29,7 +29,7 @@ class PIEMD(Deflector):
 
     """
 
-    def __init__(self, source: Source, *, theta_E=None, q=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0) -> None:
+    def __init__(self, source: Source, *, theta_E=None, q=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0, lens_colour=[1.0,1.0,1.0]) -> None:
         """
         Initialise a pseudo-isothermal elliptical mas distribution (PIEMD) deflector class.
         
@@ -79,17 +79,17 @@ class PIEMD(Deflector):
         self.cx = (nx-1) / 2.0
         self.cy = (ny-1) / 2.0
 
+        self.colour = source.colour
+        self.lens_colour = np.array(lens_colour)
+
     def get_image(self) -> np.ndarray:
         src = self.source.array
         nx, ny, nc = self.nx, self.ny, 1
 
         if src.ndim == 2:
             ny, nx = src.shape
-        if src.ndim == 3:
+        if src.ndim == 3: # if colour
             ny, nx, nc = src.shape # type:ignore
-
-        cx = (nx - 1) / 2
-        cy = (ny - 1) / 2
 
         cx = self.cx
         cy = self.cy
@@ -155,6 +155,12 @@ class PIEMD(Deflector):
             for c in range(nc):
                 image[:, :, c] = map_coordinates(src[:, :, c], coords, order=1, mode='nearest').reshape(ny, nx)
 
+        if self.colour:
+            Imax = np.max(image)
+            if(Imax > 0):
+                image = image / np.max(image)
+            Imax = np.clip(image, 0.0, 1.0) 
+
         return image
 
     def generate_lens(self, ml=1.0, I0=1.0):
@@ -178,7 +184,8 @@ class PIEMD(Deflector):
 
         if colour:
             # Stack into RGB
-            I = np.stack([I, I, I], axis=-1)  # (H, W, 3)
+            r,g,b = self.lens_colour
+            I = np.stack([I*r, I*g, I*b], axis=-1)  # (H, W, 3)
 
         Imax = I.max()
         if Imax > 0:
@@ -191,7 +198,7 @@ class PIEMD(Deflector):
     def generate_noise(self):
         colour = self.source.array.shape[-1] 
         if (colour == 3):
-            noise = np.random.normal(0, 0.1, size=(self.nx, self.ny, colour)) # NOTE not sure if these are right
+            noise = np.random.normal(0, 0.1, size=(self.nx, self.ny, colour)) # TODO stdev can be set automatically somehow
         else:
             noise = np.random.normal(0, 0.1, size=(self.nx, self.ny)) 
         return noise
@@ -208,10 +215,6 @@ class PIEMD(Deflector):
         """
         
         x, y = r
-        nx, ny = self.nx, self.ny
-
-        cx = (nx - 1) / 2
-        cy = (ny - 1) / 2
 
         cx = self.cx
         cy = self.cy
@@ -455,13 +458,7 @@ class PIEMD(Deflector):
                 image_arr += self.source.array
 
             image_arr += noise_arr
-
-            # match plot_image behaviour: no renormalisation, just clip
-            if np.max(image_arr) >= 100:
-                image_arr = np.clip(image_arr, 0.0, 255)
-                image_arr = image_arr.astype(int)
-            else:
-                image_arr = np.clip(image_arr, 0.0, 1.0)
+            image_arr = np.clip(image_arr, 0.0, 1.0)
 
             plt.imshow(image_arr, origin='lower')
 
@@ -493,7 +490,7 @@ class PIEMD(Deflector):
         plt.show()
 
     def plot_image(self, *, critical_curves=False, caustics=False, 
-                convergence=False, potential=False, image=True, lens=True, noise=False, I_0=1.0):
+                convergence=False, potential=False, image=True, lens=True, noise=False, I_0=2.0):
 
         # initialise noise array
         noise_arr = np.zeros_like(self.source.array)
@@ -511,11 +508,7 @@ class PIEMD(Deflector):
                 image_arr += self.generate_lens(I0=I_0)
 
             image_arr += noise_arr
-            if np.max(image_arr >= 100):
-                image_arr = np.clip(image_arr, 0.0, 255)
-                image_arr = image_arr.astype(int)
-            else:
-                image_arr = np.clip(image_arr, 0.0, 1.0)
+            image_arr = np.clip(image_arr, 0.0, 1.0)
 
 
             plt.imshow(image_arr, origin='lower')
