@@ -31,6 +31,7 @@ class Source:
             raise ValueError("Array must be 2D (grayscale) or 3D (RGB)")
 
         self.array = padded
+        return self.array.shape
     
     def get_indices(self):
         ny, nx, *_ = self.array.shape
@@ -41,6 +42,10 @@ class Source:
         X, Y = np.meshgrid(x,y)
 
         return X,Y
+    
+    def plot_source(self):
+        plt.imshow(self.array, origin='lower')
+        plt.show()
 
     
 class DiskSource(Source):
@@ -99,7 +104,7 @@ class Deflector:
         self.source = new_source
         self.ny, self.nx = self.source.array.shape
 
-    def align_source(self, cx: int = 0, cy: int = 0):
+    def align_source(self, cx: int = 0, cy: int = 0, source=False ):
         """
         Re-center the source array so that the pixel at (cx, cy) in the original
         array appears at the center of a new square array. The new array side
@@ -107,6 +112,11 @@ class Deflector:
 
         Updates self.source.array to the new padded/shifted array and also returns it.
         """
+
+        self.cx = cx
+        self.cy = cy
+        return
+
         src_arr = self.source.array
         # src_arr shape: (H, W) or (H, W, C)
         nx, ny, *rest = src_arr.shape  # rest = [] or [C]
@@ -137,3 +147,7 @@ class Deflector:
         self.ny, self.nx, *_ = arr.shape
         return arr
     
+    def pad_source(self, pad):
+        self.ny, self.nx, *_ = self.source.pad(pad) 
+        self.cx = (self.nx-1) / 2.0
+        self.cy = (self.ny-1) / 2.0

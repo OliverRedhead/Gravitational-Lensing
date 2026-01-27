@@ -29,7 +29,7 @@ class PIEMD(Deflector):
 
     """
 
-    def __init__(self, source: Source, theta_E: float, *, q=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0) -> None:
+    def __init__(self, source: Source, *, theta_E=None, q=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0) -> None:
         """
         Initialise a pseudo-isothermal elliptical mas distribution (PIEMD) deflector class.
         
@@ -38,7 +38,7 @@ class PIEMD(Deflector):
         theta_E : float
             Einstein radius used to scale the size of the deflector.
 
-        e : float = 1.0
+        q : float = 1.0
             axis ratio parameter determines how elliptical the resulting convergence map is. 
             A value in (0, 1] where 1 is circular. 
         
@@ -53,11 +53,16 @@ class PIEMD(Deflector):
             External shear parameter in xy direction
 
         gamma_2 : float = 0.0
-            External shear parameter in x=y x=-y direction
+            External shear parameter in x=y, x=-y direction
         """
 
         super().__init__(source)
-        self.theta_E = theta_E
+        
+        if isinstance(theta_E, float) or isinstance(theta_E, int):
+            self.theta_E = theta_E
+        else:
+            # Default Einstein radius: 0.3 times the larger image dimension
+            self.theta_E = 0.3 * max(self.source.array.shape)
 
         if q > 1 or q <= 0:
             raise ValueError(f"Axis ratio must be in the range (0, 1], not: q={q}")
@@ -69,78 +74,10 @@ class PIEMD(Deflector):
         self.g1 = gamma_1
         self.g2 = gamma_2
 
-    def get_convergence(self):
-        nx, ny = self.nx, self.ny
+        ny, nx, *_ = self.source.array.shape
 
-        cx = (nx - 1) / 2
-        cy = (ny - 1) / 2
-
-        x = np.arange(0, nx, 1)
-        y = np.arange(0, ny, 1)
-        X, Y = np.meshgrid(x, y, indexing="xy")
-
-        Rx = X - cx
-        Ry = Y - cy
-
-        Rxp =  np.cos(self.phi) * Rx + np.sin(self.phi) * Ry
-        Ryp = -np.sin(self.phi) * Rx + np.cos(self.phi) * Ry
-
-        Re = np.maximum(
-            np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2),
-            1e-12
-        )
-
-        return self.theta_E / (2 * Re)
-
-    def get_potential(self):
-        nx, ny = self.nx, self.ny
-
-        cx = (nx - 1) / 2
-        cy = (ny - 1) / 2
-
-        x = np.arange(0, nx, 1)
-        y = np.arange(0, ny, 1)
-        X, Y = np.meshgrid(x, y, indexing="xy")
-
-        Rx = X - cx
-        Ry = Y - cy
-
-        Rxp =  np.cos(self.phi) * Rx + np.sin(self.phi) * Ry
-        Ryp = -np.sin(self.phi) * Rx + np.cos(self.phi) * Ry
-
-        Re = np.maximum(
-            np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2),
-            1e-12
-        )
-
-        Rf = np.sqrt((1-self.q**2) * Rxp**2 + (Re + self.s)**2) 
-
-        eps = 1e-12
-        if abs(1 - self.q) < 1e-6:
-            rc = np.sqrt(Rxp**2 + Ryp**2 + self.s**2)
-            alpha_x = self.theta_E * Rxp / (rc + self.s + eps)
-            alpha_y = self.theta_E * Ryp / (rc + self.s + eps)
-        
-        else:
-            a = np.sqrt(1 - self.q**2)
-
-            denom_x = np.maximum(Re + self.s, eps)
-            denom_y = np.maximum(Re + self.q**2 * self.s, eps)
-
-            u_x = a * Rxp / denom_x
-            u_y = a * Ryp / denom_y
-
-            # clip to valid domain for arctanh ( for floating point errors)
-            u_y = np.clip(u_y, -1 + 1e-12, 1 - 1e-12)
-
-            alpha_x = self.theta_E * (1 / a) * np.arctan(u_x)
-            alpha_y = self.theta_E * (1 / a) * np.arctanh(u_y)
-
-        # NOTE external shear (psi_2) does NOT rotate with the mass distribution
-        psi_1 =  Rxp * alpha_x + Ryp * alpha_y - self.s * np.log(Rf) 
-        psi_2 = self.g1 * (Rx**2 - Ry**2) + 2 * self.g2 * Rx * Ry       # external shear 
-
-        return psi_1 + psi_2
+        self.cx = (nx-1) / 2.0
+        self.cy = (ny-1) / 2.0
 
     def get_image(self) -> np.ndarray:
         src = self.source.array
@@ -153,6 +90,10 @@ class PIEMD(Deflector):
 
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
+
+        cx = self.cx
+        cy = self.cy
+
 
         x = np.arange(0, nx, 1)
         y = np.arange(0, ny, 1)
@@ -216,6 +157,51 @@ class PIEMD(Deflector):
 
         return image
 
+    def generate_lens(self, ml=1.0, I0=1.0):
+        """
+        Convert the convergence map into an array resembling a galaxy.
+
+        Parameters
+        ----------
+        ml : float = 1.0
+            Mass-to-light ratio
+        I0 : float = 1.0
+            Normalized intensity factor
+        """
+        colour = self.source.array.shape[-1] == 3
+
+        kappa = self.get_convergence()
+        I = I0 * kappa / ml
+
+        # Remove negatives
+        I = np.maximum(I, 0.0)
+
+        if colour:
+            # Stack into RGB
+            I = np.stack([I, I, I], axis=-1)  # (H, W, 3)
+
+        Imax = I.max()
+        if Imax > 0:
+            I = I / Imax
+
+        I = np.clip(I, 0.0, 1.0)
+
+        return I
+     
+    def generate_noise(self):
+        colour = self.source.array.shape[-1] 
+        if (colour == 3):
+            noise = np.random.normal(0, 0.1, size=(self.nx, self.ny, colour)) # NOTE not sure if these are right
+        else:
+            noise = np.random.normal(0, 0.1, size=(self.nx, self.ny)) 
+        return noise
+
+
+    """
+    two mapping methods - one for normal mapping and one for jax.
+    They should both work the exact same way.
+    """
+
     def map(self, r):
         """
         given a coordinate on image plane (x,y), returns corresponding point on source plane.
@@ -226,6 +212,9 @@ class PIEMD(Deflector):
 
         cx = (nx - 1) / 2
         cy = (ny - 1) / 2
+
+        cx = self.cx
+        cy = self.cy
 
         # image->relative coordinates
         Rx = x - cx
@@ -276,6 +265,9 @@ class PIEMD(Deflector):
         cx = (nx - 1) / 2.0
         cy = (ny - 1) / 2.0
 
+        cx = self.cx
+        cy = self.cy
+
         Rx = x - cx
         Ry = y - cy
 
@@ -322,6 +314,89 @@ class PIEMD(Deflector):
 
         return jnp.array([beta_x, beta_y])
 
+    """
+    getter methods for visualising things
+    """
+
+    def get_convergence(self):
+        nx, ny = self.nx, self.ny
+
+        cx = (nx - 1) / 2
+        cy = (ny - 1) / 2
+
+        cx = self.cx
+        cy = self.cy
+
+        x = np.arange(0, nx, 1)
+        y = np.arange(0, ny, 1)
+        X, Y = np.meshgrid(x, y, indexing="xy")
+
+        Rx = X - cx
+        Ry = Y - cy
+
+        Rxp =  np.cos(self.phi) * Rx + np.sin(self.phi) * Ry
+        Ryp = -np.sin(self.phi) * Rx + np.cos(self.phi) * Ry
+
+        Re = np.maximum(
+            np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2),
+            1e-12
+        )
+
+        return self.theta_E / (2 * Re)
+
+    def get_potential(self):
+        nx, ny = self.nx, self.ny
+
+        cx = (nx - 1) / 2
+        cy = (ny - 1) / 2
+
+        cx = self.cx
+        cy = self.cy
+
+        x = np.arange(0, nx, 1)
+        y = np.arange(0, ny, 1)
+        X, Y = np.meshgrid(x, y, indexing="xy")
+
+        Rx = X - cx
+        Ry = Y - cy
+
+        Rxp =  np.cos(self.phi) * Rx + np.sin(self.phi) * Ry
+        Ryp = -np.sin(self.phi) * Rx + np.cos(self.phi) * Ry
+
+        Re = np.maximum(
+            np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2),
+            1e-12
+        )
+
+        Rf = np.sqrt((1-self.q**2) * Rxp**2 + (Re + self.s)**2) 
+
+        eps = 1e-12
+        if abs(1 - self.q) < 1e-6:
+            rc = np.sqrt(Rxp**2 + Ryp**2 + self.s**2)
+            alpha_x = self.theta_E * Rxp / (rc + self.s + eps)
+            alpha_y = self.theta_E * Ryp / (rc + self.s + eps)
+        
+        else:
+            a = np.sqrt(1 - self.q**2)
+
+            denom_x = np.maximum(Re + self.s, eps)
+            denom_y = np.maximum(Re + self.q**2 * self.s, eps)
+
+            u_x = a * Rxp / denom_x
+            u_y = a * Ryp / denom_y
+
+            # clip to valid domain for arctanh ( for floating point errors)
+            u_y = np.clip(u_y, -1 + 1e-12, 1 - 1e-12)
+
+            alpha_x = self.theta_E * (1 / a) * np.arctan(u_x)
+            alpha_y = self.theta_E * (1 / a) * np.arctanh(u_y)
+
+        # NOTE external shear (psi_2) does NOT rotate with the mass distribution
+        psi_1 =  Rxp * alpha_x + Ryp * alpha_y - self.s * np.log(Rf) 
+        psi_2 = self.g1 * (Rx**2 - Ry**2) + 2 * self.g2 * Rx * Ry       # external shear 
+
+        return psi_1 + psi_2
+
     def get_magnification(self):
 
         def map_only_r(r):
@@ -359,11 +434,46 @@ class PIEMD(Deflector):
         mapped_curves = [np.array([self.map(point) for point in polygon]) for polygon in curves]
         return mapped_curves
 
+
+    """
+    These methods help me view things
+    """
+
     def plot_source(self, *, critical_curves=False, caustics=False, 
-                    convergence=False, potential=False, image=True):
-        
-        if image:
-            cbar = plt.imshow(self.source.array, cmap='inferno', origin='lower')
+                    convergence=False, potential=False, image=True, noise=False):
+
+        # initialise noise array
+        noise_arr = np.zeros_like(self.source.array)
+        if noise:
+            noise_arr = self.generate_noise()
+
+        # colour
+        if self.source.array.shape[-1] == 3:
+            image_arr = np.zeros_like(self.source.array, dtype=float)
+
+            if image:
+                image_arr += self.source.array
+
+            image_arr += noise_arr
+
+            # match plot_image behaviour: no renormalisation, just clip
+            if np.max(image_arr) >= 100:
+                image_arr = np.clip(image_arr, 0.0, 255)
+                image_arr = image_arr.astype(int)
+            else:
+                image_arr = np.clip(image_arr, 0.0, 1.0)
+
+            plt.imshow(image_arr, origin='lower')
+
+        else:
+            image_arr = np.zeros_like(self.source.array, dtype=float)
+
+            if image:
+                image_arr += self.source.array
+
+            image_arr += noise_arr
+
+            cbar = plt.imshow(image_arr, cmap='inferno', origin='lower')
             plt.colorbar(cbar)
 
         if convergence:
@@ -372,22 +482,57 @@ class PIEMD(Deflector):
         if potential:
             plt.contour(self.get_potential())
 
-        if(critical_curves):
+        if critical_curves:
             for curve in self.get_critical_curves():
-                plt.plot(curve[:,0], curve[:,1], '-', c='red')
+                plt.plot(curve[:, 0], curve[:, 1], '-', c='red')
 
-        if(caustics):
+        if caustics:
             for curve in self.get_caustics():
-                plt.plot(curve[:,0], curve[:,1], '-', c='orange')
-                
+                plt.plot(curve[:, 0], curve[:, 1], '-', c='orange')
+
         plt.show()
-        return
+
     
     def plot_image(self, *, critical_curves=False, caustics=False, 
-                    convergence=False, potential=False, image=True):
+                convergence=False, potential=False, image=True, lens=True, noise=False):
 
-        if image:
-            cbar = plt.imshow(self.get_image(), cmap='inferno', origin='lower')
+        # initialise noise array
+        noise_arr = np.zeros_like(self.source.array)
+        if noise:
+            noise_arr = self.generate_noise()
+
+        # colour
+        if self.source.array.shape[-1] == 3:
+            image_arr = np.zeros_like(self.source.array, dtype=float)
+
+            if image:
+                image_arr += self.get_image()
+
+            if lens:
+                image_arr += self.generate_lens()
+
+            image_arr += noise_arr
+            if np.max(image_arr >= 100):
+                image_arr = np.clip(image_arr, 0.0, 255)
+                image_arr = image_arr.astype(int)
+            else:
+                image_arr = np.clip(image_arr, 0.0, 1.0)
+
+
+            plt.imshow(image_arr, origin='lower')
+
+        else:
+            image_arr = np.zeros_like(self.source.array, dtype=float)
+
+            if image:
+                image_arr += self.get_image()
+
+            if lens:
+                image_arr += self.generate_lens()
+
+            image_arr += noise_arr
+
+            cbar = plt.imshow(image_arr, cmap='inferno', origin='lower')
             plt.colorbar(cbar)
 
         if convergence:
@@ -396,19 +541,15 @@ class PIEMD(Deflector):
         if potential:
             plt.contour(self.get_potential())
 
-        if(critical_curves):
+        if critical_curves:
             for curve in self.get_critical_curves():
-                plt.plot(curve[:,0], curve[:,1], '-', c='red')
+                plt.plot(curve[:, 0], curve[:, 1], '-', c='red')
 
-        if(caustics):
+        if caustics:
             for curve in self.get_caustics():
-                plt.plot(curve[:,0], curve[:,1], '-', c='orange')
-                
+                plt.plot(curve[:, 0], curve[:, 1], '-', c='orange')
+
         plt.show()
-        return
-        
-
-
 
 
 
