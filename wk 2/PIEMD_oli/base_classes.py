@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy as sp
 
 class Source:
 
@@ -117,3 +118,58 @@ class Deflector:
         self.ny, self.nx, *_ = self.source.pad(pad) 
         self.cx = (self.nx-1) / 2.0
         self.cy = (self.ny-1) / 2.0
+
+    @staticmethod
+    def hubble_resolution(arr, * , field=2.0, res=0.04):
+        """
+        Takes an array and reduces/increases its resolution 
+        to that of the hubble space telescope at 2'' x 2''.
+
+        Parameters
+        ----------
+        arr : np.ndarray
+            A 2d array representing the image to be resolved.
+        
+        field : float = 2.0
+            a float representing the field of view of the image in arcseconds/
+            Default is 2.0 arcseconds.
+
+        res : float = 0.04
+            the resolution of the camera in arcseconds per pixel.
+            Default is 0.04 arcseconds.
+
+
+        Note
+        ----
+        - The input array must be square
+        - Using the fact that UV/visible resolution is 0.04'' per pixel
+        hence resulting image must be 50x50
+        """
+
+        nx, ny, *_ = arr.shape
+        if nx != ny:
+            raise ValueError(f"input array must be square. Not {nx}x{ny}")
+        
+        z = 50 / nx
+        zoomed_arr = sp.ndimage.zoom(arr, z)
+        return zoomed_arr
+    
+    @staticmethod
+    def hubble_noise(arr, t=600.0):
+        """
+        Takes an array and applies noise to it given by a poisson distribution.
+
+        Parameters
+        ----------
+        arr : np.ndarray
+            A 2d array representing the image to be noised'
+
+        t : float = 600.0
+            A time period to model the noise distribution over in seconds (default is 10 minutes)
+
+        Notes
+        -----
+        - default time is 600 seconds
+        """
+
+        
