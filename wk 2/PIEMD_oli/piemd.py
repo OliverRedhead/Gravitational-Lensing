@@ -163,6 +163,7 @@ class PIEMD(Deflector):
 
         return image
 
+
     def generate_lens(self, ml=1.0, I0=1.0):
         """
         Convert the convergence map into an array resembling a galaxy.
