@@ -492,9 +492,8 @@ class PIEMD(Deflector):
 
         plt.show()
 
-    
     def plot_image(self, *, critical_curves=False, caustics=False, 
-                convergence=False, potential=False, image=True, lens=True, noise=False):
+                convergence=False, potential=False, image=True, lens=True, noise=False, I_0=1.0):
 
         # initialise noise array
         noise_arr = np.zeros_like(self.source.array)
@@ -509,7 +508,7 @@ class PIEMD(Deflector):
                 image_arr += self.get_image()
 
             if lens:
-                image_arr += self.generate_lens()
+                image_arr += self.generate_lens(I0=I_0)
 
             image_arr += noise_arr
             if np.max(image_arr >= 100):
@@ -528,7 +527,7 @@ class PIEMD(Deflector):
                 image_arr += self.get_image()
 
             if lens:
-                image_arr += self.generate_lens()
+                image_arr += self.generate_lens(I0=I_0)
 
             image_arr += noise_arr
 
