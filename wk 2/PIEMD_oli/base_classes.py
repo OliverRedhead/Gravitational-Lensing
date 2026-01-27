@@ -5,6 +5,7 @@ class Source:
 
     def __init__(self, array : np.ndarray = np.array([])) -> None:
         self.array = array
+        self.colour = array.shape[-1] == 3
 
     def get_source(self) -> np.ndarray:
         return self.array
@@ -106,46 +107,11 @@ class Deflector:
 
     def align_source(self, cx: int = 0, cy: int = 0, source=False ):
         """
-        Re-center the source array so that the pixel at (cx, cy) in the original
-        array appears at the center of a new square array. The new array side
-        length is chosen so the original array fits without clipping.
-
-        Updates self.source.array to the new padded/shifted array and also returns it.
+        sets the pixel given (cx,cy) as the center of the lens
         """
-
         self.cx = cx
         self.cy = cy
         return
-
-        src_arr = self.source.array
-        # src_arr shape: (H, W) or (H, W, C)
-        nx, ny, *rest = src_arr.shape  # rest = [] or [C]
-
-        if not ((0 <= cx < nx) and (0 <= cy < ny)):
-            raise ValueError("cx and cy must be within source array bounds")
-        
-        # determine required half-size so that (cx, cy) can be centered
-        lx = np.maximum(cx, (nx - 1) - cx)
-        ly = np.maximum(cy, (ny - 1) - cy)
-        l = int(np.maximum(lx, ly))
-
-        # prepare new square array, preserving channels and dtype
-        side = 2 * l + 1
-        new_shape = (side, side, *rest)  # (side, side) or (side, side, C)
-        arr = np.zeros(new_shape, dtype=src_arr.dtype)
-
-        # compute destination slice so that original (cx, cy) moves to (l, l)
-        dest_row0 = l - cx
-        dest_col0 = l - cy
-        dest_row1 = dest_row0 + nx
-        dest_col1 = dest_col0 + ny
-
-        arr[dest_row0:dest_row1, dest_col0:dest_col1, ...] = src_arr
-
-        # update the source array and return the aligned array
-        self.source.array = arr
-        self.ny, self.nx, *_ = arr.shape
-        return arr
     
     def pad_source(self, pad):
         self.ny, self.nx, *_ = self.source.pad(pad) 
