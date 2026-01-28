@@ -26,7 +26,6 @@ class PIEMD(Deflector):
     This may be changed in future but for now is how I'm doing it.
 
     - Mapping coordinate uses bilinear spline interpoltion from scipy.ndimage.map_coordinates. Order = 1 is an arbitrary choice for now
-
     """
 
     def __init__(self, source: Source, *, theta_E=None, q=1.0, s=0.0, phi=0.0, gamma_1=0.0, gamma_2=0.0, lens_colour=[1.0,1.0,1.0]) -> None:
@@ -82,7 +81,7 @@ class PIEMD(Deflector):
         self.colour = source.colour
         self.lens_colour = np.array(lens_colour)
 
-    def get_image(self) -> np.ndarray:
+    def generate_image(self) -> np.ndarray:
         src = self.source.array
         nx, ny, nc = self.nx, self.ny, 1
 
@@ -163,39 +162,50 @@ class PIEMD(Deflector):
 
         return image
 
-
-    def generate_lens(self, ml=1.0, I0=1.0):
+    def generate_lens(self, n=2):
         """
-        Convert the convergence map into an array resembling a galaxy.
+        Generate a 2D elliptical Gaussian representing a lens galaxy.
 
         Parameters
         ----------
-        ml : float = 1.0
-            Mass-to-light ratio
-        I0 : float = 1.0
-            Normalized intensity factor
+        shape : tuple of int
+            (ny, nx) size of the output image.
+        einstein_radius : float
+            Characteristic radius (in pixels) of the lens (similar to sigma for Gaussian).
+        axis_ratio : float
+            Minor-to-major axis ratio q = b/a (0 < q <= 1).
+        I0 : float
+            Peak intensity.
+
+        Returns
+        -------
+        np.ndarray
+            2D image of the elliptical Gaussian lens.
         """
-        colour = self.source.array.shape[-1] == 3
+        nx, ny = self.nx, self.ny
+        cx, cy = self.cx, self.cy
 
-        kappa = self.get_convergence()
-        I = I0 * kappa / ml
+        Y, X = np.indices((ny, nx))
 
-        # Remove negatives
-        I = np.maximum(I, 0.0)
+        # Center coordinates
+        dx = X - cx
+        dy = Y - cy
 
-        if colour:
-            # Stack into RGB
-            r,g,b = self.lens_colour
-            I = np.stack([I*r, I*g, I*b], axis=-1)  # (H, W, 3)
+        # Rotate coordinates
+        cos_phi = np.cos(self.phi)
+        sin_phi = np.sin(self.phi)
+        X_rot = cos_phi * dx + sin_phi * dy
+        Y_rot = -sin_phi * dx + cos_phi * dy
 
-        Imax = I.max()
-        if Imax > 0:
-            I = I / Imax
+        # Elliptical radius
+        r2 = (self.q * X_rot)**2 + Y_rot**2
+        r2 = r2**(n/2)  # only if you want a generalized Gaussian with power n
 
-        I = np.clip(I, 0.0, 1.0)
+        # Elliptical Gaussian
+        img = np.exp(-0.5 * r2 / self.theta_E**2)
 
-        return I
-     
+        return img
+
     def generate_noise(self):
         colour = self.source.array.shape[-1] 
         if (colour == 3):
@@ -203,6 +213,28 @@ class PIEMD(Deflector):
         else:
             noise = np.random.normal(0, 0.1, size=(self.nx, self.ny)) 
         return noise
+
+    def generate_hubble_image(self):
+        # get image plane
+        img = self.generate_image()
+        img = img / np.max(img)
+        
+        # Superimpose lens galaxy
+        img += self.generate_lens()
+        
+        # clip
+        img_lens = np.clip(img, 0, 1.0) # TODO check how this looks without this
+        
+        # zoom to hubble resolution
+        img_zoomed = self.hubble_resolution(img_lens)
+
+        # add noise characteristic of hubble 
+        img_noise = self.hubble_noise(img_zoomed, gain=4, dark_level='high')
+
+        # blur with Hubble psf
+        img_blurred = self.hubble_blur(img_noise)
+
+        return img_blurred
 
 
     """
@@ -319,7 +351,7 @@ class PIEMD(Deflector):
         return jnp.array([beta_x, beta_y])
 
     """
-    getter methods for visualising things
+    getter methods for testing
     """
 
     def get_convergence(self):
@@ -438,7 +470,6 @@ class PIEMD(Deflector):
         mapped_curves = [np.array([self.map(point) for point in polygon]) for polygon in curves]
         return mapped_curves
 
-
     """
     These methods help me view things
     """
@@ -506,7 +537,7 @@ class PIEMD(Deflector):
                 image_arr += self.get_image()
 
             if lens:
-                image_arr += self.generate_lens(I0=I_0)
+                image_arr += self.generate_lens()
 
             image_arr += noise_arr
             image_arr = np.clip(image_arr, 0.0, 1.0)
@@ -521,7 +552,7 @@ class PIEMD(Deflector):
                 image_arr += self.get_image()
 
             if lens:
-                image_arr += self.generate_lens(I0=I_0)
+                image_arr += self.generate_lens()
 
             image_arr += noise_arr
 
@@ -543,8 +574,6 @@ class PIEMD(Deflector):
                 plt.plot(curve[:, 0], curve[:, 1], '-', c='orange')
 
         plt.show()
-
-
 
 
 
