@@ -109,7 +109,7 @@ class Deflector:
         self.ny, self.nx = self.source.array.shape
         self.image = None
 
-    def align_source(self, cx: int = 0, cy: int = 0, source=False ):
+    def align_lens(self, cx: int = 0, cy: int = 0):
         """
         sets the pixel given (cx,cy) as the center of the lens
         """
@@ -117,6 +117,21 @@ class Deflector:
         self.cy = cy
         self.image = None
         return
+    
+    def align_source(self, cx: int = 0, cy: int = 0):
+        """
+        Move the source to (cx, cy) by shifting the lens
+        in the opposite direction.
+        """
+        dx = self.cx - cx
+        dy = self.cy - cy
+
+        self.cx += dx
+        self.cy += dy
+
+        self.image = None
+        return
+
     
     def pad_source(self, pad):
         self.ny, self.nx, *_ = self.source.pad(pad) 
@@ -126,6 +141,12 @@ class Deflector:
 
     def clear_image(self):
         self.image = None
+
+    def set_image(self, image):
+        self.image = image
+        self.ny, self.nx, *_ = image.shape
+        self.cx = (self.nx - 1)/2
+        self.cy = (self.ny - 1)/2
 
 
     @staticmethod
@@ -225,7 +246,7 @@ class Deflector:
         return signal_noisy
 
     @staticmethod
-    def hubble_blur(arr, fwhm=0.07, res=0.04):
+    def hubble_blur_gaussian(arr, fwhm=0.07, res=0.04):
         """
         Convolve an image with the Hubble PSF to simulate telescope blur.
 
@@ -252,5 +273,25 @@ class Deflector:
         psf = np.exp(-(x**2 + y**2)/(2*sigma**2))
         psf =  psf / np.sum(psf)
 
+        blur = sp.signal.convolve(arr, psf, mode='same')
+        return blur
+    
+    @staticmethod
+    def hubble_blur_psf(arr):
+        """
+        Convolve an image with the Hubble PSF to simulate telescope blur.
+
+        Parameters
+        ----------
+        arr : np.ndarray
+            Input image (2D grayscale).
+
+        Returns
+        -------
+        np.ndarray
+            Blurred image of the same shape as input.
+        """
+
+        psf = np.load("data/psf.npy")
         blur = sp.signal.convolve(arr, psf, mode='same')
         return blur

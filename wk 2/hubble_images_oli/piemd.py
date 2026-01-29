@@ -83,7 +83,7 @@ class PIEMD(Deflector):
 
         self.image = None
 
-    def generate_image(self) -> np.ndarray:
+    def generate_image(self, lens="none") -> np.ndarray:
 
         if isinstance(self.image, np.ndarray):
             return self.image
@@ -167,9 +167,26 @@ class PIEMD(Deflector):
             Imax = np.clip(image, 0.0, 1.0) 
 
         self.image = image
+
+        if lens == 'none':
+            return image
+        
+        if lens == 'gaussian':
+            lens_img = self.generate_gaussian_lens(sigma=1/3*self.theta_E, n=2)
+
+        elif lens == 'sersic':
+            lens_img = self.generate_sersic_lens(n=4, R_e=self.theta_E)
+
+        elif lens == 'sersic_core':
+            lens_img = self.generate_sersic_core_lens(n=4, R_e=self.theta_E, R_b=self.s, gamma=0.1, alpha=30)
+
+        else:
+            raise ValueError(f"lens must be \'none\', \'sersic\', \'sersic_core\' or \'gaussian\'. Not {lens}")
+
+        image += lens_img
         return image
 
-    def generate_lens(self, sigma, n=2):
+    def generate_gaussian_lens(self, sigma, n):
         """
         Generate a 2D elliptical Gaussian representing a lens galaxy.
 
@@ -213,7 +230,138 @@ class PIEMD(Deflector):
 
         return img
 
-    def generate_hubble_image(self, sigma=None):
+    def generate_sersic_lens(self, n: float, R_e: float):
+        """
+        Generate a 2D elliptical Sersic representing a lens galaxy.
+
+        Parameters
+        ----------
+        n : float
+            shape parameter controlling the overall curvature of the lens
+        R_E : float
+            the scale radius (half light radius)
+
+        Returns
+        -------
+        img : np.ndarray
+            an image of a lens according to input profile
+        """
+        def b(n):
+            bn = 2 * n - 1/3
+            
+            if n > 8:
+                return bn
+            
+            if n > 0.36:
+                a1 = 4/(405 * n)
+                a2 = 46/(25515 * n**2)
+                a3 = 131/(1148175 * n**3)
+                a4 = 2194697/(30690717750 * n**4)
+                return bn + a1 + a2 + a3 - a4
+            
+            else:
+                raise ValueError(f"n must be in range (0.36, infty). Not {n}")
+
+        nx, ny = self.nx, self.ny
+        cx, cy = self.cx, self.cy
+
+        Y, X = np.indices((ny, nx))
+
+        # Center coordinates
+        dx = X - cx
+        dy = Y - cy
+
+        # Rotate coordinates
+        cos_phi = np.cos(self.phi)
+        sin_phi = np.sin(self.phi)
+        X_rot = cos_phi * dx + sin_phi * dy
+        Y_rot = -sin_phi * dx + cos_phi * dy
+
+        # Elliptical radius
+        R = np.sqrt((self.q * X_rot)**2 + Y_rot**2)
+
+        img = np.exp(-b(n) * ( (R/R_e)**(1/n) - 1))
+        return img
+    
+    def generate_sersic_core_lens(self, n: float, R_e: float, R_b: float, gamma: float, alpha: float):
+        """
+        Generate a 2D elliptical Sersic representing a lens galaxy.
+
+        Parameters
+        ----------
+        n : float
+            shape parameter controlling the overall curvature of the lens
+        R_E : float
+            the scale radius (half light radius). As we have used the same function for bn as the sersic case,
+            this radius will not be 100% accurate.
+        R_b : float
+            The break radius R_b is the point at which the profile changes from one regime to another.
+            We will use the self.s core parameter to set this in practice.
+        gamma : float
+            The slope of the inner power-law region. Usually we want this less than n, usually about 0.1-0.3
+        alpha : float
+            Controls the sharpness of the transition between the cusp and the outer Sersic profile
+
+        Returns
+        -------
+        img : np.ndarray
+            an image of a lens according to input profile
+        """
+        def b(n:float):
+            bn = 2 * n - 1/3
+            
+            if n > 8:
+                return bn
+            
+            if n > 0.36:
+                a1 = 4/(405 * n)
+                a2 = 46/(25515 * n**2)
+                a3 = 131/(1148175 * n**3)
+                a4 = 2194697/(30690717750 * n**4)
+                return bn + a1 + a2 + a3 - a4
+            
+            else:
+                raise ValueError(f"n must be in range (0.36, infty). Not {n}")
+
+        nx, ny = self.nx, self.ny
+        cx, cy = self.cx, self.cy
+
+        Y, X = np.indices((ny, nx))
+
+        # Center coordinates
+        dx = X - cx
+        dy = Y - cy
+
+        # Rotate coordinates
+        cos_phi = np.cos(self.phi)
+        sin_phi = np.sin(self.phi)
+        X_rot = cos_phi * dx + sin_phi * dy
+        Y_rot = -sin_phi * dx + cos_phi * dy
+
+        # Elliptical radius
+        R = np.maximum(np.sqrt((self.q * X_rot)**2 + Y_rot**2), 1e-6)
+
+        bn = b(n)
+        I_prime = 2**(-gamma/alpha) * np.exp(bn * 2**(1/(alpha*n)) * (R_b/R_e)**(1/n))
+        a1 = 1 + (R_b/R)**alpha
+        a2 = (R**alpha + R_b**alpha)/(R_e**alpha)
+        
+        img = I_prime * a1**(gamma/alpha) * np.exp( -bn * a2**(1/(n*alpha)) )
+
+        return img
+
+    def generate_hubble_image(self, 
+                              *, 
+                              sigma=None, 
+                              psf='hubble', 
+                              n=2, 
+                              R_e=None, 
+                              lens='sersic', 
+                              I_lens=1,
+                              R_b=None,
+                              gamma=0.2,
+                              alpha=3.0
+                              ):
         # get image plane
         if not isinstance(self.image, np.ndarray):
             img = self.generate_image()
@@ -222,16 +370,43 @@ class PIEMD(Deflector):
 
         img = img / np.max(img)
         
-        # Superimpose lens galaxy
-        if not (isinstance(sigma, int) or isinstance(sigma, float)):
-            sigma = 1/2 * self.theta_E 
-        img += self.generate_lens(sigma)
+        # Superimpose lens galaxy            
+        if lens == 'sersic':
+            if not (isinstance(R_e, int) or isinstance(R_e, float)):
+                R_e = 0.5 * self.theta_E
+            img += I_lens * self.generate_sersic_lens(n, R_e)
+        elif lens == 'sersic_core':
+            if not (isinstance(R_e, int) or isinstance(R_e, float)):
+                R_e = 0.5 * self.theta_E
+            if not (isinstance(R_b, int) or isinstance(R_b, float)):
+                R_b = self.s
+
+            img += I_lens * self.generate_sersic_core_lens(
+                n=n,
+                R_e=R_e,
+                R_b=R_b,
+                gamma=gamma,
+                alpha=alpha
+            )
+
+        elif lens == 'gaussian':
+            if not (isinstance(sigma, int) or isinstance(sigma, float)):
+                sigma = 1/3 * self.theta_E 
+            img += I_lens * self.generate_gaussian_lens(sigma, n=n)
+
+        elif not lens == 'none':
+            raise ValueError(f"lens must be \'none\', \'sersic\', \'sersic_core\' or \'gaussian\'. Not {lens}")
 
         # zoom to hubble resolution
         img_zoomed = self.hubble_resolution(img)
 
         # blur with Hubble psf
-        img_blurred = self.hubble_blur(img_zoomed)
+        if psf == 'hubble':
+            img_blurred = self.hubble_blur_psf(img_zoomed)
+        elif psf == 'gaussian':
+            img_blurred = self.hubble_blur_gaussian(img_zoomed)
+        else:
+            raise ValueError(f"psf must be either \'hubble\' or \'gaussian\'. Not {psf}")
 
         # add noise characteristic of hubble 
         img_noise = self.hubble_noise(img_blurred, gain=4, dark_level='high')
@@ -525,7 +700,7 @@ class PIEMD(Deflector):
         plt.show()
 
     def plot_image(self, *, critical_curves=False, caustics=False, 
-                convergence=False, potential=False, image=True, lens=True, noise=False, I_0=2.0):
+                convergence=False, potential=False, image=True, lens=True, I_0=2.0):
 
 
         # colour
@@ -536,25 +711,24 @@ class PIEMD(Deflector):
                 image_arr += self.generate_image()
 
             if lens:
-                image_arr += self.generate_lens(sigma=self.theta_E)
+                image_arr += self.generate_gaussian_lens(sigma=self.theta_E, n=2)
 
             image_arr = np.clip(image_arr, 0.0, 1.0)
-
-
             plt.imshow(image_arr, origin='lower')
 
+        # greyscale
         else:
             image_arr = np.zeros_like(self.source.array, dtype=float)
 
             if image:
-                if self.image == None:
+                if not isinstance(self.image, np.ndarray):
                     image_arr += self.generate_image()
                 else:
                     image_arr = self.image
             
 
             if lens:
-                image_arr += self.generate_lens(sigma=self.theta_E)
+                image_arr += self.generate_gaussian_lens(sigma=self.theta_E, n=2)
 
             cbar = plt.imshow(image_arr, cmap='inferno', origin='lower')
             plt.colorbar(cbar)
