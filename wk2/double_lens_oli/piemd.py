@@ -309,26 +309,13 @@ class PIEMD(Deflector):
 
         self.image = None
 
-
-    """ working on telescope images """
-
     def generate_image(self, 
                        *, 
                        R_e: float|None = None, 
                        lens: str = 'sersic_core',
+                       sigma: float|None = None,
                        I_lens: float = 1.0
                        ) -> np.ndarray:
-
-        """
-        Generate the image plane of the system.
-
-        Parameters
-        -----------
-        R_e : float | None = None
-            The half-light radius used to scale the image of the lens.
-        I_lens : float = 1.0
-            Changes the relative brightness of the lens
-        """
 
         src = self.source.array
         nx, ny, nc = self.nx, self.ny, 1
@@ -341,13 +328,54 @@ class PIEMD(Deflector):
         cx = self.cx
         cy = self.cy
 
+
         x = np.arange(0, nx, 1)
         y = np.arange(0, ny, 1)
         X, Y = np.meshgrid(x, y, indexing="xy")
 
-        alpha_x, alpha_y = self.get_deflection()
+        Rx = X - cx
+        Ry = Y - cy
         
-        # lens equation
+        # rotate
+        Rxp =  np.cos(self.phi) * Rx + np.sin(self.phi) * Ry
+        Ryp = -np.sin(self.phi) * Rx + np.cos(self.phi) * Ry
+
+        eps = 1e-12
+
+        Re = np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2)
+        Re = np.maximum(Re, eps)
+
+        if abs(1 - self.q) < 1e-6: # in the limit of e -> 1, use sepcial case for isothermal
+            rc = np.sqrt(Rxp**2 + Ryp**2 + self.s**2)
+            alpha_x = self.theta_E * Rxp / (rc + self.s + eps) \
+                + 2 * self.g1 * Rx + 2 * self.g2 * Ry
+            alpha_y = self.theta_E * Ryp / (rc + self.s + eps) \
+                + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
+        
+        else:
+            a = np.sqrt(1 - self.q**2)
+
+            denom_x = np.maximum(Re + self.s, eps)
+            denom_y = np.maximum( Re + self.q**2 * self.s, eps)
+
+            u_x = a * Rxp / denom_x
+            u_y = a * Ryp / denom_y
+
+            # clip to valid domain for arctanh
+            u_y = np.clip(u_y, -1 + 1e-12, 1 - 1e-12)
+
+            alpha_xp = self.theta_E * (1 / a) * np.arctan(u_x)
+            alpha_yp = self.theta_E * (1 / a) * np.arctanh(u_y)
+
+            # rotate deflection back to image (x,y) coords (inverse rotation)
+            alpha_x_rot = np.cos(self.phi) * alpha_xp - np.sin(self.phi) * alpha_yp
+            alpha_y_rot = np.sin(self.phi) * alpha_xp + np.cos(self.phi) * alpha_yp
+
+            # add external shear in image coords
+            alpha_x = alpha_x_rot + 2 * self.g1 * Rx + 2 * self.g2 * Ry
+            alpha_y = alpha_y_rot + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
+            
+
         beta_x = X - alpha_x
         beta_y = Y - alpha_y
         
@@ -391,13 +419,185 @@ class PIEMD(Deflector):
                 )
         
         elif lens == 'gaussian':
-            sigma = R_e / np.sqrt(2 * np.log(2))
+            if not isinstance(sigma, float):
+                sigma = 1/3 * self.theta_E
+
             image += I_lens * self.generate_gaussian_lens(n=2, sigma=sigma)
         
         elif not lens == 'none':
             raise NotImplementedError(f"Lens {lens} not implemented. Please enter either \'sersic\', \'sersic_core\', \'gaussian\' or \'none\'.")
         
         return image
+
+
+    """ Different lensing galaxy distributions """
+
+    def generate_gaussian_lens(self, sigma, n) -> np.ndarray:
+        """
+        Generate a 2D elliptical Gaussian representing a lens galaxy.
+
+        Parameters
+        ----------
+        shape : tuple of int
+            (ny, nx) size of the output image.
+        einstein_radius : float
+            Characteristic radius (in pixels) of the lens (similar to sigma for Gaussian).
+        axis_ratio : float
+            Minor-to-major axis ratio q = b/a (0 < q <= 1).
+        I0 : float
+            Peak intensity.
+
+        Returns
+        -------
+        np.ndarray
+            2D image of the elliptical Gaussian lens.
+        """
+        nx, ny = self.nx, self.ny
+        cx, cy = self.cx, self.cy
+
+        Y, X = np.indices((ny, nx))
+
+        # Center coordinates
+        dx = X - cx
+        dy = Y - cy
+
+        # Rotate coordinates
+        cos_phi = np.cos(self.phi)
+        sin_phi = np.sin(self.phi)
+        X_rot = cos_phi * dx + sin_phi * dy
+        Y_rot = -sin_phi * dx + cos_phi * dy
+
+        # Elliptical radius
+        r2 = (self.q * X_rot)**2 + Y_rot**2
+        r2 = r2**(n/2)  
+
+        # Elliptical Gaussian
+        img = np.exp(-0.5 * r2 / sigma**2)
+
+        return img
+
+    def generate_sersic_lens(self, n: float, R_e: float) -> np.ndarray:
+        """
+        Generate a 2D elliptical Sersic representing a lens galaxy.
+
+        Parameters
+        ----------
+        n : float
+            shape parameter controlling the overall curvature of the lens
+        R_E : float
+            the scale radius (half light radius)
+
+        Returns
+        -------
+        img : np.ndarray
+            an image of a lens according to input profile
+        """
+        def b(n):
+            bn = 2 * n - 1/3
+            
+            if n > 8:
+                return bn
+            
+            if n > 0.36:
+                a1 = 4/(405 * n)
+                a2 = 46/(25515 * n**2)
+                a3 = 131/(1148175 * n**3)
+                a4 = 2194697/(30690717750 * n**4)
+                return bn + a1 + a2 + a3 - a4
+            
+            else:
+                raise ValueError(f"n must be in range (0.36, infty). Not {n}")
+
+        nx, ny = self.nx, self.ny
+        cx, cy = self.cx, self.cy
+
+        Y, X = np.indices((ny, nx))
+
+        # Center coordinates
+        dx = X - cx
+        dy = Y - cy
+
+        # Rotate coordinates
+        cos_phi = np.cos(self.phi)
+        sin_phi = np.sin(self.phi)
+        X_rot = cos_phi * dx + sin_phi * dy
+        Y_rot = -sin_phi * dx + cos_phi * dy
+
+        # Elliptical radius
+        R = np.sqrt((self.q * X_rot)**2 + Y_rot**2)
+
+        img = np.exp(-b(n) * ( (R/R_e)**(1/n) - 1))
+        return img
+    
+    def generate_sersic_core_lens(self, n: float, R_e: float, R_b: float, gamma: float, alpha: float) -> np.ndarray:
+        """
+        Generate a 2D elliptical Sersic representing a lens galaxy.
+
+        Parameters
+        ----------
+        n : float
+            shape parameter controlling the overall curvature of the lens
+        R_E : float
+            the scale radius (half light radius). As we have used the same function for bn as the sersic case,
+            this radius will not be 100% accurate.
+        R_b : float
+            The break radius R_b is the point at which the profile changes from one regime to another.
+            We will use the self.s core parameter to set this in practice.
+        gamma : float
+            The slope of the inner power-law region. Usually we want this less than n, usually about 0.1-0.3
+        alpha : float
+            Controls the sharpness of the transition between the cusp and the outer Sersic profile
+
+        Returns
+        -------
+        img : np.ndarray
+            an image of a lens according to input profile
+        """
+        def b(n:float):
+            bn = 2 * n - 1/3
+            
+            if n > 8:
+                return bn
+            
+            if n > 0.36:
+                a1 = 4/(405 * n)
+                a2 = 46/(25515 * n**2)
+                a3 = 131/(1148175 * n**3)
+                a4 = 2194697/(30690717750 * n**4)
+                return bn + a1 + a2 + a3 - a4
+            
+            else:
+                raise ValueError(f"n must be in range (0.36, infty). Not {n}")
+
+        nx, ny = self.nx, self.ny
+        cx, cy = self.cx, self.cy
+
+        Y, X = np.indices((ny, nx))
+
+        # Center coordinates
+        dx = X - cx
+        dy = Y - cy
+
+        # Rotate coordinates
+        cos_phi = np.cos(self.phi)
+        sin_phi = np.sin(self.phi)
+        X_rot = cos_phi * dx + sin_phi * dy
+        Y_rot = -sin_phi * dx + cos_phi * dy
+
+        # Elliptical radius
+        R = np.maximum(np.sqrt((self.q * X_rot)**2 + Y_rot**2), 1e-6)
+
+        bn = b(n)
+        I_prime = 2**(-gamma/alpha) * np.exp(bn * 2**(1/(alpha*n)) * (R_b/R_e)**(1/n))
+        a1 = 1 + (R_b/R)**alpha
+        a2 = (R**alpha + R_b**alpha)/(R_e**alpha)
+        
+        img = I_prime * a1**(gamma/alpha) * np.exp( -bn * a2**(1/(n*alpha)) )
+
+        return img
+
+
+    """ working on telescope images """
 
     def generate_hubble_image(self, 
                               *, 
@@ -575,174 +775,6 @@ class PIEMD(Deflector):
 
 
 
-    """ Different lensing galaxy distributions """
-
-    def generate_gaussian_lens(self, sigma, n) -> np.ndarray:
-        """
-        Generate a 2D elliptical Gaussian representing a lens galaxy.
-
-        Parameters
-        ----------
-        shape : tuple of int
-            (ny, nx) size of the output image.
-        einstein_radius : float
-            Characteristic radius (in pixels) of the lens (similar to sigma for Gaussian).
-        axis_ratio : float
-            Minor-to-major axis ratio q = b/a (0 < q <= 1).
-        I0 : float
-            Peak intensity.
-
-        Returns
-        -------
-        np.ndarray
-            2D image of the elliptical Gaussian lens.
-        """
-        nx, ny = self.nx, self.ny
-        cx, cy = self.cx, self.cy
-
-        Y, X = np.indices((ny, nx))
-
-        # Center coordinates
-        dx = X - cx
-        dy = Y - cy
-
-        # Rotate coordinates
-        cos_phi = np.cos(self.phi)
-        sin_phi = np.sin(self.phi)
-        X_rot = cos_phi * dx + sin_phi * dy
-        Y_rot = -sin_phi * dx + cos_phi * dy
-
-        # Elliptical radius
-        r2 = (self.q * X_rot)**2 + Y_rot**2
-        r2 = r2**(n/2)  
-
-        # Elliptical Gaussian
-        img = np.exp(-0.5 * r2 / sigma**2)
-
-        return img
-
-    def generate_sersic_lens(self, n: float, R_e: float) -> np.ndarray:
-        """
-        Generate a 2D elliptical Sersic representing a lens galaxy.
-
-        Parameters
-        ----------
-        n : float
-            shape parameter controlling the overall curvature of the lens
-        R_E : float
-            the scale radius (half light radius)
-
-        Returns
-        -------
-        img : np.ndarray
-            an image of a lens according to input profile
-        """
-        def b(n):
-            bn = 2 * n - 1/3
-            
-            if n > 8:
-                return bn
-            
-            if n > 0.36:
-                a1 = 4/(405 * n)
-                a2 = 46/(25515 * n**2)
-                a3 = 131/(1148175 * n**3)
-                a4 = 2194697/(30690717750 * n**4)
-                return bn + a1 + a2 + a3 - a4
-            
-            else:
-                raise ValueError(f"n must be in range (0.36, infty). Not {n}")
-
-        nx, ny = self.nx, self.ny
-        cx, cy = self.cx, self.cy
-
-        Y, X = np.indices((ny, nx))
-
-        # Center coordinates
-        dx = X - cx
-        dy = Y - cy
-
-        # Rotate coordinates
-        cos_phi = np.cos(self.phi)
-        sin_phi = np.sin(self.phi)
-        X_rot = cos_phi * dx + sin_phi * dy
-        Y_rot = -sin_phi * dx + cos_phi * dy
-
-        # Elliptical radius
-        R = np.sqrt((self.q * X_rot)**2 + Y_rot**2)
-
-        img = np.exp(-b(n) * ( (R/R_e)**(1/n) - 1))
-        return img
-    
-    def generate_sersic_core_lens(self, n: float, R_e: float, R_b: float, gamma: float, alpha: float) -> np.ndarray:
-        """
-        Generate a 2D elliptical Sersic representing a lens galaxy.
-
-        Parameters
-        ----------
-        n : float
-            shape parameter controlling the overall curvature of the lens
-        R_E : float
-            the scale radius (half light radius). As we have used the same function for bn as the sersic case,
-            this radius will not be 100% accurate.
-        R_b : float
-            The break radius R_b is the point at which the profile changes from one regime to another.
-            We will use the self.s core parameter to set this in practice.
-        gamma : float
-            The slope of the inner power-law region. Usually we want this less than n, usually about 0.1-0.3
-        alpha : float
-            Controls the sharpness of the transition between the cusp and the outer Sersic profile
-
-        Returns
-        -------
-        img : np.ndarray
-            an image of a lens according to input profile
-        """
-        def b(n:float):
-            bn = 2 * n - 1/3
-            
-            if n > 8:
-                return bn
-            
-            if n > 0.36:
-                a1 = 4/(405 * n)
-                a2 = 46/(25515 * n**2)
-                a3 = 131/(1148175 * n**3)
-                a4 = 2194697/(30690717750 * n**4)
-                return bn + a1 + a2 + a3 - a4
-            
-            else:
-                raise ValueError(f"n must be in range (0.36, infty). Not {n}")
-
-        nx, ny = self.nx, self.ny
-        cx, cy = self.cx, self.cy
-
-        Y, X = np.indices((ny, nx))
-
-        # Center coordinates
-        dx = X - cx
-        dy = Y - cy
-
-        # Rotate coordinates
-        cos_phi = np.cos(self.phi)
-        sin_phi = np.sin(self.phi)
-        X_rot = cos_phi * dx + sin_phi * dy
-        Y_rot = -sin_phi * dx + cos_phi * dy
-
-        # Elliptical radius
-        R = np.maximum(np.sqrt((self.q * X_rot)**2 + Y_rot**2), 1e-6)
-
-        bn = b(n)
-        I_prime = 2**(-gamma/alpha) * np.exp(bn * 2**(1/(alpha*n)) * (R_b/R_e)**(1/n))
-        a1 = 1 + (R_b/R)**alpha
-        a2 = (R**alpha + R_b**alpha)/(R_e**alpha)
-        
-        img = I_prime * a1**(gamma/alpha) * np.exp( -bn * a2**(1/(n*alpha)) )
-
-        return img
-
-
-
     """ two mapping methods - one for normal mapping and one for jax. They should both work the exact same way. """
 
     def map(self, r):
@@ -854,67 +886,7 @@ class PIEMD(Deflector):
         return jnp.array([beta_x, beta_y])
 
 
-    """ getter methods """
-
-    def get_deflection(self):
-        src = self.source.array
-        nx, ny, nc = self.nx, self.ny, 1
-
-        if src.ndim == 2:
-            ny, nx = src.shape
-        if src.ndim == 3: # if colour
-            ny, nx, nc = src.shape # type:ignore
-
-        cx = self.cx
-        cy = self.cy
-
-        x = np.arange(0, nx, 1)
-        y = np.arange(0, ny, 1)
-        X, Y = np.meshgrid(x, y, indexing="xy")
-
-        Rx = X - cx
-        Ry = Y - cy
-        
-        # rotate
-        Rxp =  np.cos(self.phi) * Rx + np.sin(self.phi) * Ry
-        Ryp = -np.sin(self.phi) * Rx + np.cos(self.phi) * Ry
-
-        eps = 1e-12
-
-        Re = np.sqrt(self.q**2 * (self.s**2 + Rxp**2) + Ryp**2)
-        Re = np.maximum(Re, eps)
-
-        if abs(1 - self.q) < 1e-6: # in the limit of e -> 1, use special case for isothermal
-            rc = np.sqrt(Rxp**2 + Ryp**2 + self.s**2)
-            alpha_x = self.theta_E * Rxp / (rc + self.s + eps) \
-                + 2 * self.g1 * Rx + 2 * self.g2 * Ry
-            alpha_y = self.theta_E * Ryp / (rc + self.s + eps) \
-                + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
-        
-        else:
-            a = np.sqrt(1 - self.q**2)
-
-            denom_x = np.maximum(Re + self.s, eps)
-            denom_y = np.maximum( Re + self.q**2 * self.s, eps)
-
-            u_x = a * Rxp / denom_x
-            u_y = a * Ryp / denom_y
-
-            # clip to valid domain for arctanh
-            u_y = np.clip(u_y, -1 + 1e-12, 1 - 1e-12)
-
-            alpha_xp = self.theta_E * (1 / a) * np.arctan(u_x)
-            alpha_yp = self.theta_E * (1 / a) * np.arctanh(u_y)
-
-            # rotate deflection back to image (x,y) coords (inverse rotation)
-            alpha_x_rot = np.cos(self.phi) * alpha_xp - np.sin(self.phi) * alpha_yp
-            alpha_y_rot = np.sin(self.phi) * alpha_xp + np.cos(self.phi) * alpha_yp
-
-            # add external shear in image coords
-            alpha_x = alpha_x_rot + 2 * self.g1 * Rx + 2 * self.g2 * Ry
-            alpha_y = alpha_y_rot + 2 * self.g2 * Rx - 2 * self.g1 * Ry 
-
-        return alpha_x, alpha_y
+    """ getter methods for testing """
 
     def get_convergence(self):
         nx, ny = self.nx, self.ny
