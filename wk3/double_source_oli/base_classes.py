@@ -43,7 +43,8 @@ class Source:
         plt.imshow(self.array, origin='lower')
         plt.show()
 
-    
+
+
 class DiskSource(Source):
 
     """
@@ -165,13 +166,15 @@ class Deflector:
 
         Y, X = np.indices((self.size, self.size))
 
-        beta_x = np.rint(X - alpha_x).astype(int)
-        beta_y = np.rint(Y - alpha_y).astype(int)
+        beta_x = X - alpha_x
+        beta_y = Y - alpha_y
 
         beta_x = np.clip(beta_x, 0, self.size - 1)
         beta_y = np.clip(beta_y, 0, self.size - 1)
 
-        image = source.array[beta_y, beta_x]
+        coords = np.array([beta_y.ravel(), beta_x.ravel()])  
+        image = map_coordinates(source.array, coords, order=1, mode='nearest').reshape(self.size, self.size)
+
         return image
 
     def set_lens_center(self, cx: float, cy: float) -> None:
@@ -194,31 +197,27 @@ class Deflector:
     """simulate the resolution, blur and noise of real intruments"""
 
     @staticmethod
-    def hubble_resolution(arr, * , fov=2.0, res=0.04):
+    def set_resolution(arr, *, fov=2.0, telescope='hubble') -> np.ndarray:
         """
-        Takes an array and reduces/increases its resolution 
-        to that of the hubble space telescope at 2'' x 2''.
+        static method to convert an array to the desired resolution of a telescope.
 
         Parameters
         ----------
-        arr : np.ndarray
-            A 2d array representing the image to be resolved.
-        
-        field : float = 2.0
-            a float representing the field of view of the image in arcseconds/
-            Default is 2.0 arcseconds.
-
-        res : float = 0.04
-            the resolution of the camera in arcseconds per pixel.
-            Default is 0.04 arcseconds.
-
-        Note
-        ----
-        - The input array must be square
-        - Using the fact that UV/visible resolution is 0.04'' per pixel
-        hence resulting image must be 50x50
+        arr: np.ndarray
+            image to convert resolution
+        fov : float
+            field of view in arcseconds
+        telescope : str
+            the key of the desired telescope {'hubble', 'euclid'}
         """
-
+        
+        RES = {'hubble': 0.04, 'euclid': 0.1, 'JWST': 0.063}
+        
+        if telescope not in RES:
+            raise NotImplementedError(f"telescope {telescope} not implemented. Please enter either \'hubble\', \'euclid\' or \'JWST\'.")
+        
+        res = RES[telescope]
+        
         ny, nx, *_ = arr.shape
         if nx != ny:
             raise ValueError(f"input array must be square. Not {nx}x{ny}")
@@ -229,44 +228,28 @@ class Deflector:
         return zoomed_arr
 
     @staticmethod
-    def hubble_noise(arr, t=600.0, gain=1, dark_level="low", signal_to_noise=500):
-        """
-        Apply a realistic HST CCD noise model to a normalized image.
-
-        Parameters
-        ----------
-        arr : np.ndarray
-            Input image normalized 0 -> 1
-
-        t : float
-            Exposure time in seconds. Default 600s
-
-        gain : int
-            e-/DN (1 or 4)
-
-        dark_level : str
-            "low", "medium", or "high"
-
-        wavelength : int
-            Wavelength in angstroms. Default 6000 Å
-
-        inner_full_well : int
-            Full well electrons for inner detector pixels
-
-        outer_full_well : int
-            Full well electrons for outer detector pixels
-
-        pixel_mask : np.ndarray, optional
-            Boolean mask: True for inner pixels, False for outer
-
-        Note
-        ----
-        All data is taken from
-        https://hst-docs.stsci.edu/stisihb/chapter-7-feasibility-and-detector-performance/7-2-the-ccd
-        """
+    def blur_image(arr, *, telescope='hubble') -> np.ndarray:
+        PSF_FILE = {
+            'hubble': 'data/hubble_psf.npy',
+            'euclid': 'data/euclid_psf.npy',
+            'JWST': 'data/JWST_psf.npy'
+            }
         
-        READ_NOISE = {1: 6.2, 4: 8.7}  # e- RMS
-        DARK_CURRENT = {"low": 2.9e-2, "medium": 3.4e-2, "high": 4.1e-2}  # e-/s/pix
+        if not telescope in PSF_FILE:
+            raise NotImplementedError(f"telescope {telescope} not implemented. Please enter either \'hubble\', \'euclid\' or \'JWST\'..")
+
+        psf = np.load("data/psf.npy")
+        blur = sp.signal.convolve(arr, psf, mode='same')
+        return blur
+
+    @ staticmethod
+    def add_noise(arr, *, t=600, telescope='hubble', signal_to_noise=500) -> np.ndarray:
+        """
+        simulate noise and add it to the input array
+        """
+
+        READ_NOISE = {'hubble': 8.7, 'euclid': 4.2, 'JWST': 15.8} # e- rms
+        DARK_CURRENT = {'hubble': 4.1e-2, 'euclid': 1.4e-2, 'JWST': 1.9e-3} # e-/s/pixel
 
         # (arbitrary scale)
         arr = arr / np.max(arr)
@@ -277,48 +260,17 @@ class Deflector:
         signal_noisy = np.random.poisson(signal_e).astype(float)
 
         # dark current (Poisson)
-        dark_rate = DARK_CURRENT[dark_level]
+        dark_rate = DARK_CURRENT[telescope]
         dark_e = np.random.poisson(dark_rate * t, size=arr.shape).astype(float)
         signal_noisy += dark_e
 
         # read noise (Gaussian) 
-        read_sigma = READ_NOISE[gain]
+        read_sigma = READ_NOISE[telescope]
         read_noise = np.random.normal(0, read_sigma, size=arr.shape)
         signal_noisy += read_noise
 
         return signal_noisy
 
-    @staticmethod
-    def hubble_blur(arr, fwhm=0.07, res=0.04):
-        """
-        Convolve an image with the Hubble PSF to simulate telescope blur.
-
-        Parameters
-        ----------
-        image : np.ndarray
-            Input image (2D grayscale).
-        fwhm : float
-            FWHM of hubble telescope in arcseconds
-
-        Returns
-        -------
-        np.ndarray
-            Blurred image of the same shape as input.
-        """
-
-        size = arr.shape[0]
-        # arbitrary
-        fwhm_pixels = fwhm / res
-        sigma = fwhm_pixels / 2.355
-
-        x = np.arange(0, size, 1, float) - size//2
-        y = x[:, np.newaxis]
-        psf = np.exp(-(x**2 + y**2)/(2*sigma**2))
-        psf =  psf / np.sum(psf)
-
-        blur = sp.signal.convolve(arr, psf, mode='same')
-        return blur
-    
 
 
 class SIS(Deflector):
@@ -395,7 +347,6 @@ class SIS(Deflector):
 
         return psi
     
-
 
 
 class PIEMD(Deflector):
@@ -603,3 +554,11 @@ class PIEMD(Deflector):
         lvl0segs = segments[0]
 
         return lvl0segs
+
+
+
+class Plane:
+
+    def __init__(self, source: Source, deflector: Deflector | None = None) -> None:
+        self.source = source
+        self.deflector = deflector
