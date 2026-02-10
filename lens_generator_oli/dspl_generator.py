@@ -5,6 +5,9 @@ import matplotlib.pyplot as plt
 from skimage import measure
 from scipy.interpolate import splprep, splev
 
+import numpyro
+import numpyro.distributions as dist
+
 from herculens.Coordinates.pixel_grid import PixelGrid
 from herculens.Instrument.noise import Noise
 from herculens.Instrument.psf import PSF
@@ -212,12 +215,12 @@ class DSPLGenerator():
             return e1, e2
         
         e1, e2 = compute_ellipticity(
-            q = np.random.uniform(0.4, 1.0), 
+            q = np.random.uniform(0.2, 1.0), 
             phi = np.random.uniform(0, np.pi)
         )
 
         lens_EPL_kwargs = {
-            'theta_E': np.random.uniform(0.5, 1.0),
+            'theta_E': dist.TruncatedNormal(loc=0.75, scale=0.25, low=0.0, high=2.0), 
             'gamma': np.random.uniform(1.7, 2.3),
             'e1': e1,
             'e2': e2,
@@ -258,7 +261,7 @@ class DSPLGenerator():
         elif "SERSIC_ELLIPSE" in self.light_model.light_models[0].profile_type_list: # type: ignore
             lens_light_kwargs = [{
                 'amp': self.lens_amp,
-                'R_sersic': lens_EPL_kwargs['theta_E']*1e-1 ,
+                'R_sersic': lens_EPL_kwargs['theta_E'],
                 'n_sersic': 4.0, # n=4: de Vaucouleurs profile
                 'e1': lens_EPL_kwargs['e1'],
                 'e2': lens_EPL_kwargs['e2'],
@@ -277,7 +280,7 @@ class DSPLGenerator():
         elif "SERSIC_ELLIPSE" in self.light_model.light_models[1].profile_type_list: # type: ignore
            source1_light_kwargs = [{
                 'amp': self.source1_amp,
-                'R_sersic': lens_EPL_kwargs['theta_E']*1e-2, # type: ignore
+                'R_sersic': lens_EPL_kwargs['theta_E'], # type: ignore
                 'n_sersic': 4.0, # n=4: de Vaucouleurs profile
                 'e1': 0.0,
                 'e2': 0.0,
@@ -308,7 +311,7 @@ class DSPLGenerator():
 
         mp_light_kwargs = [lens_light_kwargs, source1_light_kwargs, source2_light_kwargs]
 
-        eta = np.random.uniform(1.0, 5.0)
+        eta = np.random.uniform(1.0, 5.0) # TODO
 
         return mp_mass_kwargs, mp_light_kwargs, eta
         
@@ -389,7 +392,7 @@ class DSPLGenerator():
         """
         initialises LensImage and returns an array of the lens model
         """
-        if not hasattr(self, "lens_img"):
+        if not hasattr(self, "lens_image"):
             self.get_lens_image()
         
         model = self.lens_image.simulation(
@@ -571,3 +574,32 @@ class DSPLGenerator():
 
     def shuffle(self):
         self.mass_kwargs, self.light_kwargs, self.eta = self._initialise_profile_parameters()
+
+    def n_models(self, filepath: str, n=10):
+        """
+        simulate n lens images and save them to filepath
+        """
+        for i in range(n):
+            self.shuffle()
+            sim = self.get_model()
+            plt.imshow(sim, extent=self.pixel_grid.extent, cmap='PuOr_r', norm='log') # type: ignore
+            plt.colorbar()
+            plt.title(f"model {i}") 
+            plt.savefig(filepath + f"model{i}.png")
+            plt.close()
+
+    def n_simulations(self, filepath: str, n=10):
+        """
+        simulate n lens images and save them to filepath
+        """
+        for i in range(n):
+            self.shuffle()
+            sim = self.get_simulation()
+            plt.imshow(sim, extent=self.pixel_grid.extent, cmap='PuOr_r') # type: ignore
+            plt.colorbar()
+            plt.title(f"simulation {i}") 
+            plt.savefig(filepath + f"simulation_{i}.png")
+            plt.close()
+
+        
+        
