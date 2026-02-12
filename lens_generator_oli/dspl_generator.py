@@ -11,6 +11,7 @@ from functools import partial
 import matplotlib.pyplot as plt
 
 from skimage import measure
+from scipy.ndimage import map_coordinates
 from scipy.interpolate import splprep, splev
 
 import numpyro
@@ -227,7 +228,7 @@ class DSPLGenerator():
         )
         
         lens_EPL_kwargs = {
-            'theta_E' : dist.TruncatedNormal(0.97, 0.43, low=0.0).sample(key),
+            'theta_E' : dist.TruncatedNormal(0.97, 0.43, low=0.5).sample(key),
             'gamma': np.random.uniform(1.7, 2.3),
             'e1': e1,
             'e2': e2,
@@ -254,7 +255,7 @@ class DSPLGenerator():
             e2 = e * np.sin(2 * phi)
             return e1, e2
         
-        key = jax.random.PRNGKey(0)
+        key = jax.random.PRNGKey(np.random.randint(0, 1_000))
 
         # -- lens kwargs -- #
         if "PIXELATED" in self.light_model.light_models[0].profile_type_list: # type: ignore
@@ -271,7 +272,7 @@ class DSPLGenerator():
             )
 
             lens_EPL_kwargs = {
-                'theta_E' : dist.TruncatedNormal(0.97, 0.43, low=0.0).sample(key), # type: ignore
+                'theta_E' : dist.TruncatedNormal(0.97, 0.43, low=0.5).sample(key), # type: ignore
                 'gamma': np.random.uniform(1.7, 2.3),
                 'e1': e1,
                 'e2': e2,
@@ -446,7 +447,8 @@ class DSPLGenerator():
         model = self.lens_image.simulation(
             kwargs_mass=self.mass_kwargs,
             kwargs_light=self.light_kwargs,
-            eta_flat=self.eta
+            eta_flat=self.eta,
+            noise_seed=random.PRNGKey(np.random.randint(0, 1_000))
         )
 
         return model
@@ -503,6 +505,20 @@ class DSPLGenerator():
     
     """caustics and critical curves methods"""
 
+    @staticmethod
+    def cartesian_to_polar(x: float | jnp.ndarray, y: float | jnp.ndarray) -> tuple:
+        """
+        compute polar coordinates from cartesian
+        """
+        return jnp.sqrt(x**2 + y**2), jnp.arctan2(y, x)
+    
+    @staticmethod
+    def polar_to_cartesian(r: float | jnp.ndarray, theta: float | jnp.ndarray) -> tuple:
+        """
+        compute polar coordinates from cartesian
+        """
+        return r * jnp.cos(theta), r * jnp.sin(theta)
+
     def _inverse_magnification(self, x, y, plane, kind):
         A = self.mass_model.A(x=x, y=y, kwargs=self.mass_kwargs, eta_flat=self.eta, kind=kind)
         Ap = A[..., plane, :, :]
@@ -517,7 +533,19 @@ class DSPLGenerator():
 
         return Ap[..., 0, 0] * Ap[..., 1, 1] - Ap[..., 0, 1] * Ap[..., 1, 0]
     
-    def _critical_curves(self, init_guess: list[list[float]], *, plane: int = 2, delta: float = 1e-2, N: int = 1000, kind="auto"):
+    def get_critical_curves_directly(
+            self, 
+            init_guess: list[list[float]], 
+            *, 
+            plane: int = 2, 
+            tol: float = 1e-6, 
+            max_newton: int = 5,
+            forward_mode_differentiation: bool = False,
+            delta: float = 1e-2, 
+            N: int = 1000, 
+            kind: str = "auto",
+            polar: bool = True
+            ):
         """
         Find the critical curves of the lens system
 
@@ -534,7 +562,16 @@ class DSPLGenerator():
             the maximum number of iterations used for the newtonian solver
         kind : str = "auto"
             eihter auto or direct, the mode for evaluating the jacobian.
+        tol : float = 1e-6
+            the tolerance of the zero solver. How close to zero does it need to be.
+        max_newton : int = 5
+            5 * max_newton newton steps will be done before giving up finding a zero
+        forward_mode_differentiation: bool = False
+            I actually dont know what this does
+        polar : bool = True
+            whether the algorithm uses cartesian or polar coordiantes. Defualt is True.
         """
+
         
         @jax.tree_util.Partial
         def _inv_mag(p):
@@ -542,15 +579,27 @@ class DSPLGenerator():
             return self._inverse_magnification(x, y, plane, kind)
 
         zs = ZeroSolver()
-        
         init_guess = jnp.array(init_guess) # type: ignore
-        paths, stopping_reason = zs.zero_contour_finder(
-            _inv_mag,
-            init_guess,
-            delta=delta,
-            N=N
-        )
-        paths = jnp.asarray(paths['path'])
+
+        if polar:
+            paths, stopping_reason = self._critical_curves_polar(
+                init_guess,
+                plane=plane,
+                tol=tol,
+                max_newton=max_newton,
+                forward_mode_differentiation=forward_mode_differentiation,
+                delta=delta,
+                N=N,
+                kind=kind
+            )
+        else:
+            paths, stopping_reason = zs.zero_contour_finder(
+                _inv_mag,
+                init_guess,
+                delta=delta,
+                N=N
+            )
+            paths = jnp.asarray(paths['path'])
 
         return paths, stopping_reason
     
@@ -570,19 +619,7 @@ class DSPLGenerator():
         finds the citical curves using the zero_solver in polar coordianates. Note that init_guesses are still in cartesian coords
         """
         
-        def cartesian_to_polar(x: float | jnp.ndarray, y: float | jnp.ndarray) -> tuple:
-            """
-            compute polar coordinates from cartesian
-            """
-            return jnp.sqrt(x**2 + y**2), jnp.arctan2(y, x)
-        
-        def polar_to_cartesian(r: float | jnp.ndarray, theta: float | jnp.ndarray) -> tuple:
-            """
-            compute polar coordinates from cartesian
-            """
-            return r * jnp.cos(theta), r * jnp.sin(theta)
-        
-        guess_r, guess_theta = cartesian_to_polar(*jnp.asarray(init_guess).T)
+        guess_r, guess_theta = self.cartesian_to_polar(*jnp.asarray(init_guess).T)
         init_guess_arr = jnp.stack([guess_r, guess_theta], axis=1)
         
 
@@ -605,31 +642,41 @@ class DSPLGenerator():
         pp = jnp.asarray(paths_polar['path'])
         r = pp[..., 0]
         theta = pp[..., 1]
-        x, y = polar_to_cartesian(r, theta)
+        x, y = self.polar_to_cartesian(r, theta)
 
         paths = jnp.stack([x, y], axis=-1)
 
         return paths, stopping_reason
 
-    def _map(self, curves, plane):
+    def get_cuastics_directly(self, curves, plane):
+        n_curves, n_points, _ = curves.shape
+        
+        x_flat = curves[..., 0].reshape(-1)  
+        y_flat = curves[..., 1].reshape(-1)
+
+        x_def, y_def = self._map(x_flat, y_flat, plane)
+
+        new_shape = (n_curves, n_points) + x_def.shape[1:]
+        x_def = x_def.reshape(new_shape)
+        y_def = y_def.reshape(new_shape)
+
+        return x_def, y_def
+    
+
+    def _map(self, x, y, plane):
         """
         curves: shape (n_curves, n_points, 2)
         plane: which mass plane to return
         """
-        n_curves, n_points, _ = curves.shape
 
-        x_flat = curves[..., 0].reshape(-1)  
-        y_flat = curves[..., 1].reshape(-1)
-
-        # vmap over points
         batched_ray_shooting = jax.vmap(
             self.mass_model.ray_shooting,
             in_axes=(0, 0, None, None)  
         )
 
         x_def, y_def = batched_ray_shooting(
-            x_flat,
-            y_flat,
+            x,
+            y,
             self.eta,
             self.mass_kwargs
         )
@@ -637,14 +684,36 @@ class DSPLGenerator():
         x_def = jnp.asarray(x_def)[:, plane, 0]
         y_def = jnp.asarray(y_def)[:, plane, 0]
         
-        # reshape to separate curves
-        new_shape = (n_curves, n_points) + x_def.shape[1:]
-        x_def = x_def.reshape(new_shape)
-        y_def = y_def.reshape(new_shape)
-
         return x_def, y_def
-        
     
+    def _map_polar(self, r, theta, plane):
+        x, y = self.polar_to_cartesian(r, theta)
+        x_def, y_def = self._map(x, y, plane=plane)
+        r_def, theta_def = self.cartesian_to_polar(x_def, y_def)
+
+        theta_def = (theta_def + jnp.pi) % (2 * jnp.pi) - jnp.pi
+
+        return r_def, theta_def
+        
+    @partial(jax.jit, static_argnums=(0, 1, 2))
+    def _delens_magnification(self, n_r=100, n_theta=1_000):
+
+        r_max = self.fov / 2
+        r_axis = jnp.linspace(0.0, r_max, n_r)
+        theta_axis = jnp.linspace(-jnp.pi, jnp.pi, n_theta, endpoint=False)
+
+        R, Theta = jnp.meshgrid(r_axis, theta_axis, indexing="ij")
+
+        x, y = self.polar_to_cartesian(R, Theta)
+        x_src, y_src = self._map(x, y, plane=1)
+
+        mu_inv_src = self._inverse_magnification(x_src, y_src, kind="auto", plane=1 )
+
+        return mu_inv_src
+
+
+
+
     """caustics and critical curves getter methods"""
 
     def get_magnification(self):
@@ -791,5 +860,4 @@ class DSPLGenerator():
             plt.title(f"simulation {i}") 
             plt.savefig(filepath + f"simulation_{i}.png")
             plt.close()
-
 
