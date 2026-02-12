@@ -1,5 +1,13 @@
 import numpy as np
+
+import jax
 import jax.numpy as jnp
+from jax_zero_contour import ZeroSolver
+from polar_zero_countour_finder import PolarZeroSolver
+from jax import random
+
+from functools import partial
+
 import matplotlib.pyplot as plt
 
 from skimage import measure
@@ -27,6 +35,7 @@ TODO
 """
 
 
+
 class DSPLGenerator():
 
     PIXEL_SCALE = {'hubble': 0.04, 'euclid': 0.1, 'JWST': 0.063, 'example': 0.005} # arcseconds
@@ -43,6 +52,7 @@ class DSPLGenerator():
 
     def __init__(self, 
                  fov: float, 
+                 *,
                  lens_img: str | np.ndarray | None = None,
                  source1_img: str | np.ndarray | None = None,
                  source2_img: str | np.ndarray | None = None,
@@ -161,8 +171,8 @@ class DSPLGenerator():
             'grid_shape': (self.fov, self.fov),
             'pixel_scale_factor': px_scale_img / self.PIXEL_SCALE[self.telescope]
         }
-        lens_light_model = LightModel(['PIXELATED'], pixel_interpol='bilinear', kwargs_pixelated=light_kwargs) 
-        return lens_light_model
+        light_model = LightModel(['PIXELATED'], pixel_interpol='bilinear', kwargs_pixelated=light_kwargs) 
+        return light_model
 
     def _initialise_models(self) -> tuple[MPMassModel, MPLightModel]:
         """initialise mass and light models of all planes in system"""
@@ -203,11 +213,8 @@ class DSPLGenerator():
     
 
     ### --- This is where the random generation happens --- ###
-    def _initialise_profile_parameters(self) -> tuple[list,list, float]: 
-        """Initialiase mass and light profile kwargs
-        TODO need to set brightness of profiles better and make it make more sense
-        """
-        # -- mass kwargs -- #
+
+    def _fit_EPL(self, img: np.ndarray, key) -> dict[str, float]: # TODO
         def compute_ellipticity(q, phi):
             e = (1 - q) / (1 + q)
             e1 = e * np.cos(2 * phi)
@@ -218,50 +225,63 @@ class DSPLGenerator():
             q = np.random.uniform(0.2, 1.0), 
             phi = np.random.uniform(0, np.pi)
         )
-
+        
         lens_EPL_kwargs = {
-            'theta_E': dist.TruncatedNormal(loc=0.75, scale=0.25, low=0.0, high=2.0), 
+            'theta_E' : dist.TruncatedNormal(0.97, 0.43, low=0.0).sample(key),
             'gamma': np.random.uniform(1.7, 2.3),
             'e1': e1,
             'e2': e2,
             'center_x': 0.0,
             'center_y': 0.0
         }
-        lens_shear_kwargs = {
-            'gamma1': np.random.uniform(0.0, 0.05),     
-            'gamma2': np.random.uniform(0.0, 0.05),      
-            'ra_0': lens_EPL_kwargs['center_x'],
-            'dec_0': lens_EPL_kwargs['center_y'],
-        }
+        return lens_EPL_kwargs
 
+    def _fit_SIS(self, img: np.ndarray, key)-> dict[str, float]: # TODO
         source1_SIS_kwargs = {
-            'theta_E': np.random.uniform(0.1, lens_EPL_kwargs['theta_E']),     
-            'center_x': np.random.normal(0.0, lens_EPL_kwargs['theta_E']),    
-            'center_y': np.random.normal(0.0, lens_EPL_kwargs['theta_E'])    
-        }
-        source1_shear_kwargs = {
-            'gamma1': np.random.uniform(0.0, 0.05),     
-            'gamma2': np.random.uniform(0.0, 0.05),       
-            'ra_0': source1_SIS_kwargs['center_x'],
-            'dec_0': source1_SIS_kwargs['center_y'],
-        }
+                'theta_E' : dist.TruncatedNormal(0.97, 0.43, low=0.0).sample(key),   
+                'center_x': 0.0,    
+                'center_y': 0.0    
+            }
+        return source1_SIS_kwargs
 
-        lens_mass_kwargs = [lens_EPL_kwargs, lens_shear_kwargs]
-        source1_mass_kwargs = [source1_SIS_kwargs, source1_shear_kwargs]
-
-        mp_mass_kwargs = [lens_mass_kwargs, source1_mass_kwargs]
+    def _initialise_profile_parameters(self) -> tuple[list,list, float]: 
+        """Initialiase mass and light profile kwargs
+        TODO need to set brightness of profiles better and make it make more sense
+        """
+        def compute_ellipticity(q, phi):
+            e = (1 - q) / (1 + q)
+            e1 = e * np.cos(2 * phi)
+            e2 = e * np.sin(2 * phi)
+            return e1, e2
         
-        # -- light kwargs -- #
+        key = jax.random.PRNGKey(0)
+
+        # -- lens kwargs -- #
         if "PIXELATED" in self.light_model.light_models[0].profile_type_list: # type: ignore
             assert isinstance(self.lens_img, np.ndarray)
             img = self.lens_amp * self.lens_img / np.max(self.lens_img)
+            lens_EPL_kwargs = self._fit_EPL(img, key) 
             lens_light_kwargs = [{
                 "pixels" : img
             }]
         elif "SERSIC_ELLIPSE" in self.light_model.light_models[0].profile_type_list: # type: ignore
+            e1, e2 = compute_ellipticity(
+                q = np.random.uniform(0.2, 1.0), 
+                phi = np.random.uniform(0, np.pi)
+            )
+
+            lens_EPL_kwargs = {
+                'theta_E' : dist.TruncatedNormal(0.97, 0.43, low=0.0).sample(key), # type: ignore
+                'gamma': np.random.uniform(1.7, 2.3),
+                'e1': e1,
+                'e2': e2,
+                'center_x': 0.0,
+                'center_y': 0.0
+            }
+
             lens_light_kwargs = [{
                 'amp': self.lens_amp,
-                'R_sersic': lens_EPL_kwargs['theta_E'],
+                'R_sersic': np.random.normal(0.5, 0.05),
                 'n_sersic': 4.0, # n=4: de Vaucouleurs profile
                 'e1': lens_EPL_kwargs['e1'],
                 'e2': lens_EPL_kwargs['e2'],
@@ -270,17 +290,32 @@ class DSPLGenerator():
             }]
         else:
             raise ValueError # NOTE for debugging - can remove later
+        
+        lens_shear_kwargs = {
+            'gamma1': np.random.uniform(0.0, 0.05),     
+            'gamma2': np.random.uniform(0.0, 0.05),      
+            'ra_0': lens_EPL_kwargs['center_x'],
+            'dec_0': lens_EPL_kwargs['center_y'],
+        }
 
+        # -- source 1 kwargs -- #
         if "PIXELATED" in self.light_model.light_models[1].profile_type_list: # type: ignore
             assert isinstance(self.source1_img, np.ndarray)
             img = self.source1_amp * self.source1_img / np.max(self.source1_img)
+            source1_SIS_kwargs = self._fit_SIS(img, key)    # TODO fit mass profile
             source1_light_kwargs = [{
                 "pixels" : img
             }]
         elif "SERSIC_ELLIPSE" in self.light_model.light_models[1].profile_type_list: # type: ignore
-           source1_light_kwargs = [{
+            source1_SIS_kwargs = {
+                'theta_E' : dist.TruncatedNormal(0.97, 0.43, low=0.0).sample(key),  # type: ignore
+                'center_x': np.random.normal(0.0, lens_EPL_kwargs['theta_E']),    
+                'center_y': np.random.normal(0.0, lens_EPL_kwargs['theta_E'])    
+            }
+           
+            source1_light_kwargs = [{
                 'amp': self.source1_amp,
-                'R_sersic': lens_EPL_kwargs['theta_E'], # type: ignore
+                'R_sersic': np.random.normal(0.4, 0.04), 
                 'n_sersic': 4.0, # n=4: de Vaucouleurs profile
                 'e1': 0.0,
                 'e2': 0.0,
@@ -289,6 +324,14 @@ class DSPLGenerator():
             }]
         else:
             raise ValueError # NOTE for debugging - can remove later
+        
+        # -- source 2 kwargs -- #
+        source1_shear_kwargs = {
+            'gamma1': np.random.uniform(0.0, 0.05),     
+            'gamma2': np.random.uniform(0.0, 0.05),       
+            'ra_0': source1_SIS_kwargs['center_x'],
+            'dec_0': source1_SIS_kwargs['center_y'],
+        }
 
         if "PIXELATED" in self.light_model.light_models[2].profile_type_list: # type: ignore
             assert isinstance(self.source2_img, np.ndarray)
@@ -299,7 +342,7 @@ class DSPLGenerator():
         elif "SERSIC_ELLIPSE" in self.light_model.light_models[2].profile_type_list: # type: ignore
             source2_light_kwargs = [{
                 'amp': self.source2_amp,
-                'R_sersic': lens_EPL_kwargs['theta_E']*1e-3, # TODO this is not very good
+                'R_sersic': np.random.normal(0.3, 0.03), 
                 'n_sersic': 4.0, # n=4: de Vaucouleurs profile
                 'e1': 0.0,
                 'e2': 0.0,
@@ -309,6 +352,11 @@ class DSPLGenerator():
         else:
             raise ValueError # NOTE for debugging - can remove later
 
+
+        lens_mass_kwargs = [lens_EPL_kwargs, lens_shear_kwargs]
+        source1_mass_kwargs = [source1_SIS_kwargs, source1_shear_kwargs]
+
+        mp_mass_kwargs = [lens_mass_kwargs, source1_mass_kwargs]
         mp_light_kwargs = [lens_light_kwargs, source1_light_kwargs, source2_light_kwargs]
 
         eta = np.random.uniform(1.0, 5.0) # TODO
@@ -317,7 +365,7 @@ class DSPLGenerator():
         
     ### ---  --- ###
 
-    """getter methods"""
+    """general getter methods"""
 
     def get_lens_image(self) -> tuple[MPLensImage, list, list, jnp.ndarray]:
         """
@@ -403,13 +451,201 @@ class DSPLGenerator():
 
         return model
 
-
     def get_source(self):
         x_grid = self.pixel_grid._x_grid
         y_grid = self.pixel_grid._y_grid
 
         return self.light_model.surface_brightness(x=x_grid, y=y_grid, kwargs=self.light_kwargs)
+
+    def get_convergence(self):
+        """
+        get the effective convergence map of lens and source1 planes
+
+        Returns
+        -------
+        lens_kappa_wrts1 : array
+            the effective convergence map of the lens
+        lens_kappa_wrts2 : array
+            the convergence map of the system
+        """
+        x_grid = self.pixel_grid._x_grid
+        y_grid = self.pixel_grid._y_grid
+
+        lens_kappa_wrtlens, lens_kappa_wrts1, lens_kappa_wrts2 = self.mass_model.kappa(x=x_grid, y=y_grid, kwargs=self.mass_kwargs, eta_flat=self.eta)
+
+        return lens_kappa_wrts1, lens_kappa_wrts2
+
+    def get_shear(self):
+        """
+        get the shear map of the lens and source1 planes
+
+        Returns
+        --------
+        gamma_1_wrts1 : array
+            the gamma1 map of the lens plane
+        gamma_2_wrts1 : array
+            the gamma2 map of the lens plane
+        gamma_1_wrts2 : array
+            the gamma1 map of the system
+        gamma_2_wrts2 : array
+            the gamma2 map of the system
+        """
+        x_grid = self.pixel_grid._x_grid
+        y_grid = self.pixel_grid._y_grid
+
+        gamma_1, gamma_2 = self.mass_model.gamma(x=x_grid, y=y_grid, kwargs=self.mass_kwargs, eta_flat=self.eta)
+
+        gamma_1_wrtlens, gamma_1_wrts1, gamma_1_wrts2 = gamma_1
+        gamma_2_wrtlens, gamma_2_wrts1, gamma_2_wrts2 = gamma_2
+
+        return gamma_1_wrts1, gamma_2_wrts1, gamma_1_wrts2, gamma_2_wrts2
+            
     
+    """caustics and critical curves methods"""
+
+    def _inverse_magnification(self, x, y, plane, kind):
+        A = self.mass_model.A(x=x, y=y, kwargs=self.mass_kwargs, eta_flat=self.eta, kind=kind)
+        Ap = A[..., plane, :, :]
+        return Ap[..., 0, 0] * Ap[..., 1, 1] - Ap[..., 0, 1] * Ap[..., 1, 0]
+    
+    def _inverse_magnification_polar(self, r, theta, plane, kind):
+        x = r * jnp.cos(theta)
+        y = r * jnp.sin(theta)
+
+        A = self.mass_model.A(x=x, y=y, kwargs=self.mass_kwargs, eta_flat=self.eta, kind=kind)
+        Ap = A[..., plane, :, :]
+
+        return Ap[..., 0, 0] * Ap[..., 1, 1] - Ap[..., 0, 1] * Ap[..., 1, 0]
+    
+    def _critical_curves(self, init_guess: list[list[float]], *, plane: int = 2, delta: float = 1e-2, N: int = 1000, kind="auto"):
+        """
+        Find the critical curves of the lens system
+
+        Parameters
+        ----------
+        init_guess: list[list[float]]
+            A list of initial guesses for the zero solver to start at. These guesses do have a significant impact
+            on the efficacy of this method
+        plane : int = 2
+            either 1 or 2, allowing to specify which plane we want the magnitude with respect to.
+        delta : float = 1e-2
+            the tolerance of the zero solver
+        N : int = 1000
+            the maximum number of iterations used for the newtonian solver
+        kind : str = "auto"
+            eihter auto or direct, the mode for evaluating the jacobian.
+        """
+        
+        @jax.tree_util.Partial
+        def _inv_mag(p):
+            x, y = p
+            return self._inverse_magnification(x, y, plane, kind)
+
+        zs = ZeroSolver()
+        
+        init_guess = jnp.array(init_guess) # type: ignore
+        paths, stopping_reason = zs.zero_contour_finder(
+            _inv_mag,
+            init_guess,
+            delta=delta,
+            N=N
+        )
+        paths = jnp.asarray(paths['path'])
+
+        return paths, stopping_reason
+    
+    def _critical_curves_polar(
+            self, 
+            init_guess: list[list[float]], 
+            *, 
+            plane: int = 2, 
+            tol=1e-6, 
+            max_newton=5,
+            forward_mode_differentiation=False,
+            delta: float = 1e-2, 
+            N: int = 1000, 
+            kind="auto"
+            ):
+        """
+        finds the citical curves using the zero_solver in polar coordianates. Note that init_guesses are still in cartesian coords
+        """
+        
+        def cartesian_to_polar(x: float | jnp.ndarray, y: float | jnp.ndarray) -> tuple:
+            """
+            compute polar coordinates from cartesian
+            """
+            return jnp.sqrt(x**2 + y**2), jnp.arctan2(y, x)
+        
+        def polar_to_cartesian(r: float | jnp.ndarray, theta: float | jnp.ndarray) -> tuple:
+            """
+            compute polar coordinates from cartesian
+            """
+            return r * jnp.cos(theta), r * jnp.sin(theta)
+        
+        guess_r, guess_theta = cartesian_to_polar(*jnp.asarray(init_guess).T)
+        init_guess_arr = jnp.stack([guess_r, guess_theta], axis=1)
+        
+
+        @jax.tree_util.Partial
+        def _inv_mag(p):
+            r, u = p
+            theta = jnp.arctan2(jnp.sin(u), jnp.cos(u))
+            return self._inverse_magnification_polar(r, theta, plane, kind)
+        
+        zs = PolarZeroSolver(tol=tol, max_newton=max_newton, forward_mode_differentiation=forward_mode_differentiation)
+        
+        paths_polar, stopping_reason = zs.zero_contour_finder(
+            _inv_mag,
+            init_guess_arr,
+            delta=delta,
+            N=N
+        )
+
+        # paths_polar['path'] is (n_curves, n_points, 2) with (r, theta) per point.
+        pp = jnp.asarray(paths_polar['path'])
+        r = pp[..., 0]
+        theta = pp[..., 1]
+        x, y = polar_to_cartesian(r, theta)
+
+        paths = jnp.stack([x, y], axis=-1)
+
+        return paths, stopping_reason
+
+    def _map(self, curves, plane):
+        """
+        curves: shape (n_curves, n_points, 2)
+        plane: which mass plane to return
+        """
+        n_curves, n_points, _ = curves.shape
+
+        x_flat = curves[..., 0].reshape(-1)  
+        y_flat = curves[..., 1].reshape(-1)
+
+        # vmap over points
+        batched_ray_shooting = jax.vmap(
+            self.mass_model.ray_shooting,
+            in_axes=(0, 0, None, None)  
+        )
+
+        x_def, y_def = batched_ray_shooting(
+            x_flat,
+            y_flat,
+            self.eta,
+            self.mass_kwargs
+        )
+
+        x_def = jnp.asarray(x_def)[:, plane, 0]
+        y_def = jnp.asarray(y_def)[:, plane, 0]
+        
+        # reshape to separate curves
+        new_shape = (n_curves, n_points) + x_def.shape[1:]
+        x_def = x_def.reshape(new_shape)
+        y_def = y_def.reshape(new_shape)
+
+        return x_def, y_def
+        
+    
+    """caustics and critical curves getter methods"""
 
     def get_magnification(self):
         """
@@ -447,7 +683,6 @@ class DSPLGenerator():
 
         return mu_inv_wrts1, mu_inv_wrts2
     
-
     def get_critical_curves(self):
         """
         get the critical curves at lens and soure1 plane
@@ -526,50 +761,6 @@ class DSPLGenerator():
             return s1_caustics, s2_caustics
 
 
-    def get_convergence(self):
-        """
-        get the effective convergence map of lens and source1 planes
-
-        Returns
-        -------
-        lens_kappa_wrts1 : array
-            the effective convergence map of the lens
-        lens_kappa_wrts2 : array
-            the convergence map of the system
-        """
-        x_grid = self.pixel_grid._x_grid
-        y_grid = self.pixel_grid._y_grid
-
-        lens_kappa_wrtlens, lens_kappa_wrts1, lens_kappa_wrts2 = self.mass_model.kappa(x=x_grid, y=y_grid, kwargs=self.mass_kwargs, eta_flat=self.eta)
-
-        return lens_kappa_wrts1, lens_kappa_wrts2
-
-    def get_shear(self):
-        """
-        get the shear map of the lens and source1 planes
-
-        Returns
-        --------
-        gamma_1_wrts1 : array
-            the gamma1 map of the lens plane
-        gamma_2_wrts1 : array
-            the gamma2 map of the lens plane
-        gamma_1_wrts2 : array
-            the gamma1 map of the system
-        gamma_2_wrts2 : array
-            the gamma2 map of the system
-        """
-        x_grid = self.pixel_grid._x_grid
-        y_grid = self.pixel_grid._y_grid
-
-        gamma_1, gamma_2 = self.mass_model.gamma(x=x_grid, y=y_grid, kwargs=self.mass_kwargs, eta_flat=self.eta)
-
-        gamma_1_wrtlens, gamma_1_wrts1, gamma_1_wrts2 = gamma_1
-        gamma_2_wrtlens, gamma_2_wrts1, gamma_2_wrts2 = gamma_2
-
-        return gamma_1_wrts1, gamma_2_wrts1, gamma_1_wrts2, gamma_2_wrts2
-    
-
     """re-generate all necessary parameters"""
 
     def shuffle(self):
@@ -601,5 +792,4 @@ class DSPLGenerator():
             plt.savefig(filepath + f"simulation_{i}.png")
             plt.close()
 
-        
-        
+
