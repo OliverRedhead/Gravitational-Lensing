@@ -308,6 +308,8 @@ class DSPLGenerator():
                 "pixels" : img
             }]
         elif "SERSIC_ELLIPSE" in self.light_model.light_models[1].profile_type_list: # type: ignore
+            center_c, center_y = self._position_source()
+
             source1_SIS_kwargs = {
                 'theta_E' : dist.TruncatedNormal(0.97, 0.43, low=0.0).sample(key),  # type: ignore
                 'center_x': np.random.normal(0.0, lens_EPL_kwargs['theta_E']),    
@@ -647,22 +649,7 @@ class DSPLGenerator():
         paths = jnp.stack([x, y], axis=-1)
 
         return paths, stopping_reason
-
-    def get_cuastics_directly(self, curves, plane):
-        n_curves, n_points, _ = curves.shape
-        
-        x_flat = curves[..., 0].reshape(-1)  
-        y_flat = curves[..., 1].reshape(-1)
-
-        x_def, y_def = self._map(x_flat, y_flat, plane)
-
-        new_shape = (n_curves, n_points) + x_def.shape[1:]
-        x_def = x_def.reshape(new_shape)
-        y_def = y_def.reshape(new_shape)
-
-        return x_def, y_def
     
-
     def _map(self, x, y, plane):
         """
         curves: shape (n_curves, n_points, 2)
@@ -695,28 +682,9 @@ class DSPLGenerator():
 
         return r_def, theta_def
         
-    @partial(jax.jit, static_argnums=(0, 1, 2))
-    def _delens_magnification(self, n_r=100, n_theta=1_000):
-
-        r_max = self.fov / 2
-        r_axis = jnp.linspace(0.0, r_max, n_r)
-        theta_axis = jnp.linspace(-jnp.pi, jnp.pi, n_theta, endpoint=False)
-
-        R, Theta = jnp.meshgrid(r_axis, theta_axis, indexing="ij")
-
-        x, y = self.polar_to_cartesian(R, Theta)
-        x_src, y_src = self._map(x, y, plane=1)
-
-        mu_inv_src = self._inverse_magnification(x_src, y_src, kind="auto", plane=1 )
-
-        return mu_inv_src
-
-
-
-
     """caustics and critical curves getter methods"""
 
-    def get_magnification(self):
+    def get_magnification(self, plane=1):
         """
         get the magnification map of the lensing system
         
@@ -726,15 +694,15 @@ class DSPLGenerator():
             magnification considering only the lens mass
         mu_wrts2: array
             magnification considering source1 and lens mass
-        """
+        """            
         x_grid = self.pixel_grid._x_grid
         y_grid = self.pixel_grid._y_grid
 
-        mu_wrtlens, mu_wrts1, mu_wrts2 = 1/self.mass_model.inverse_magnification(x=x_grid, y=y_grid, kwargs=self.mass_kwargs, eta_flat=self.eta)
+        mu = 1/self.mass_model.inverse_magnification(x=x_grid, y=y_grid, kwargs=self.mass_kwargs, eta_flat=self.eta)
 
-        return mu_wrts1, mu_wrts2
+        return mu[plane]
 
-    def get_inverse_magnification(self):
+    def get_inverse_magnification(self, plane=1):
         """
         get the imverse magnification map of the lensing system
         
@@ -748,11 +716,11 @@ class DSPLGenerator():
         x_grid = self.pixel_grid._x_grid
         y_grid = self.pixel_grid._y_grid
 
-        mu_inv_wrtlens, mu_inv_wrts1, mu_inv_wrts2 = self.mass_model.inverse_magnification(x=x_grid, y=y_grid, kwargs=self.mass_kwargs, eta_flat=self.eta)
+        mu_inv = self.mass_model.inverse_magnification(x=x_grid, y=y_grid, kwargs=self.mass_kwargs, eta_flat=self.eta)
 
-        return mu_inv_wrts1, mu_inv_wrts2
+        return mu_inv[plane]
     
-    def get_critical_curves(self):
+    def get_critical_curves(self, plane=1):
         """
         get the critical curves at lens and soure1 plane
 
@@ -763,32 +731,22 @@ class DSPLGenerator():
         contours_phys_s1 : list[points]
             A list of points which give the source1 critical curves. Each curve is a different nested list.
         """
-        mu_inv_wrts1, mu_inv_wrts2 = self.get_inverse_magnification()
-        mu_inv_wrts1 = np.array(mu_inv_wrts1)
-        mu_inv_wrts2 = np.array(mu_inv_wrts2)
+        mu_inv = np.array(self.get_inverse_magnification(plane))
 
-        contours_wrts1 = measure.find_contours(mu_inv_wrts1, level=0.0)
-        contours_wrts2 = measure.find_contours(mu_inv_wrts2, level=0.0)
-
+        contours = measure.find_contours(mu_inv, level=0.0)
+        
         xmin, xmax, ymin, ymax = self.pixel_grid.extent
-        ny_s1, nx_s1 = mu_inv_wrts1.shape
-        ny_s2, nx_s2 = mu_inv_wrts2.shape
+        ny, nx = mu_inv.shape
 
-        cc_wrts1 = []
-        for c in contours_wrts1:
-            x = xmin + (c[:, 1] / (nx_s1 - 1)) * (xmax - xmin)
-            y = ymin + (c[:, 0] / (ny_s1 - 1)) * (ymax - ymin)
-            cc_wrts1.append(np.column_stack([x, y]))
+        cc = []
+        for c in contours:
+            x = xmin + (c[:, 1] / (nx - 1)) * (xmax - xmin)
+            y = ymin + (c[:, 0] / (ny - 1)) * (ymax - ymin)
+            cc.append(np.column_stack([x, y]))
 
-        cc_wrts2 = []
-        for c in contours_wrts2:
-            x = xmin + (c[:, 1] / (nx_s2 - 1)) * (xmax - xmin)
-            y = ymin + (c[:, 0] / (ny_s2 - 1)) * (ymax - ymin)
-            cc_wrts2.append(np.column_stack([x, y]))
+        return cc
 
-        return cc_wrts1, cc_wrts2
-
-    def get_caustics(self):
+    def get_caustics(self, plane=1):
             """
             get the caustics due to lens and source1 
 
@@ -799,10 +757,10 @@ class DSPLGenerator():
             contours_phys_s1 : list[points]
                 A list of points which give the source1 critical curves. Each curve is a different nested list.
             """
-            cc_wrts1, cc_wrts2 = self.get_critical_curves()
+            cc = self.get_critical_curves(plane)
 
-            s1_caustics = []
-            for curve in cc_wrts1:
+            caustics = []
+            for curve in cc:
                 x_img = jnp.array(curve[:, 0])
                 y_img = jnp.array(curve[:, 1])
 
@@ -811,23 +769,24 @@ class DSPLGenerator():
                 x_s1 = x_def.T[:, 1]
                 y_s1 = y_def.T[:, 1]
 
-                s1_caustics.append(np.column_stack([np.array(x_s1), np.array(y_s1)]))
+                caustics.append(np.column_stack([np.array(x_s1), np.array(y_s1)]))
 
+            return caustics
 
-            s2_caustics = []
-            for curve in cc_wrts2:
-                x_img = jnp.array(curve[:, 0])
-                y_img = jnp.array(curve[:, 1])
+    def get_tangential_caustics(self):
+        caustics = self.get_caustics(plane=1)
+        
+        tangential = None
+        max_len=0
 
-                x_def, y_def = self.mass_model.ray_shooting(x_img, y_img, eta_flat=self.eta, kwargs=self.mass_kwargs)
+        for c in caustics:
+            if len(c) > max_len:
+                max_len=len(c)
+                tangential = c
 
-                x_s2 = x_def.T[:, 2]
-                y_s2 = y_def.T[:, 2]
+        return tangential
 
-                s2_caustics.append(np.column_stack([np.array(x_s2), np.array(y_s2)]))
-
-
-            return s1_caustics, s2_caustics
+            
 
 
     """re-generate all necessary parameters"""
