@@ -30,8 +30,11 @@ from herculens.MassModel.mass_model_multiplane import MPMassModel
 from herculens.LightModel.light_model_multiplane import MPLightModel
 from herculens.LensImage.lens_image_multiplane import MPLensImage
 
+from correlated_noise import K_grid, P_Matern, pack_fft_values
+
 import os
 from tqdm import tqdm
+import copy
 
 
 class EuclidGenerator:
@@ -128,6 +131,10 @@ class EuclidGenerator:
         light_model = LightModel(['PIXELATED'], pixel_interpol='bilinear', kwargs_pixelated=light_kwargs) 
         return light_model
 
+    # for initialising source light classes
+    # NOTE supersampled with factor of two. This may need changing if it is too slow =(
+    SOURCE_PIXEL_COORDS = np.meshgrid(np.linspace(-7.5, 7.5, 550), np.linspace(-7.5, 7.5, 550))
+
     def __initialise_models(self) -> tuple[MPMassModel, MPLightModel]:
         """initialise mass and light models of all planes in system"""
 
@@ -145,9 +152,11 @@ class EuclidGenerator:
             img = hdul[1].data # type: ignore
         lens_light_model = self.__initialise_light_pixelated(img)
 
-        source1_light_model = LightModel(['SERSIC_ELLIPSE'])
+        # source1_light_model = LightModel(['SERSIC_ELLIPSE'])
+        source1_light_model = self.__initialise_light_pixelated(EuclidGenerator.SOURCE_PIXEL_COORDS[0])
 
-        source2_light_model = LightModel(['SERSIC_ELLIPSE'])
+        # source2_light_model = LightModel(['SERSIC_ELLIPSE'])
+        source2_light_model = self.__initialise_light_pixelated(EuclidGenerator.SOURCE_PIXEL_COORDS[0])
 
         mp_light_model = MPLightModel([
             lens_light_model,       # lens galaxy light
@@ -342,7 +351,7 @@ class EuclidGenerator:
 
         return self.lens_amp*img, lens_mass_kwargs, lens_light_kwargs
     
-    def __sample_s1_kwargs(self, key, tangential_caustic) -> tuple[list[dict[str, float]], list[dict[str, float]]]:
+    def __sample_s1_kwargs(self, key, tangential_caustic):
         """
         Samples kwargs for the lens model based on the image
 
@@ -381,44 +390,94 @@ class EuclidGenerator:
         source1_mass_kwargs = [source1_SIS_kwargs, source1_shear_kwargs]
 
         e1_s1, e2_s1 = phi_q2_ellipticity(
-            q = random.uniform(keys[4], minval=0.2, maxval=1.0), 
+            q = random.uniform(keys[4], minval=0.7, maxval=1.0),  # TODO
             phi = random.uniform(keys[5], minval=0.0, maxval=2*jnp.pi)
         )
+        # how am I going to add noise to this?
 
         source1_SERSIC_kwargs = {
             'amp': self.source1_amp,
-            'R_sersic': random.uniform(key=keys[6], minval=0.1, maxval=1.5),     
-            'n_sersic' : random.truncated_normal(key=keys[7], lower=-2.5, upper=7.0) + 3.0,
+            'R_sersic': random.uniform(key=keys[6], minval=0.1, maxval=1.0),     
+            'n_sersic' : random.uniform(key=keys[7], minval=0.5, maxval=4.0),
             'e1': e1_s1,
             'e2': e2_s1,
             'center_x': source1_SIS_kwargs['center_x'], 
             'center_y': source1_SIS_kwargs['center_y']
         }
 
-        source1_light_kwargs = [source1_SERSIC_kwargs]
+        sersic_light = LightModel(['SERSIC_ELLIPSE']).surface_brightness(*EuclidGenerator.SOURCE_PIXEL_COORDS, kwargs=[source1_SERSIC_kwargs])
+
+        n = 1
+        sigma = 0.3
+        rho = 20
+
+        k_grid = K_grid(shape=sersic_light.shape, scale=1)
+        P = P_Matern(k_grid.k, n, sigma, rho, k_zero=0)
+
+        scale = jnp.sqrt(P)
+        white_noise = random.normal(key=keys[8], shape=sersic_light.shape)
+        
+        pixels = jnp.fft.irfft2(pack_fft_values(white_noise*scale), s=scale.shape, norm="ortho")
+        pixels -= jnp.mean(pixels)
+        pixels /= jnp.std(pixels)
+
+        alpha = 0.6  # strength of perturbation
+        pixels = 1 + alpha * pixels
+
+        pixels = jnp.log1p(jnp.exp(alpha * pixels))
+        sersic_light = sersic_light * pixels
+
+        source1_light_kwargs = [{
+            'pixels' : sersic_light
+        }]
 
         return source1_mass_kwargs, source1_light_kwargs
     
-    def __sample_s2_kwargs(self, key, tangential_caustic) -> list[dict[str, float]]:
+    def __sample_s2_kwargs(self, key, tangential_caustic):
 
         keys = random.split(key, 10)
 
         e1_s2, e2_s2 = phi_q2_ellipticity(
-            q = random.uniform(keys[0], minval=0.2, maxval=1.0), 
+            q = random.uniform(keys[0], minval=0.7, maxval=1.0),  # TODO
             phi = random.uniform(keys[1], minval=-jnp.pi, maxval=jnp.pi)
         )
 
         cx_s2, cy_s2 = EuclidGenerator.__sample_point_in_polygon_rejection_sampling(tangential_caustic, keys[2])
         source2_SERSIC_kwargs = {
-            'amp': jnp.float32(self.source2_amp),
-            'R_sersic': random.uniform(key=keys[3], minval=0.1, maxval=0.8),     
-            'n_sersic' : random.truncated_normal(key=keys[4], lower=-2.5, upper=7.0) + 3.0,
-            'e1': jnp.float32(e1_s2),         
-            'e2': jnp.float32(e2_s2),         
-            'center_x': jnp.float32(cx_s2), 
-            'center_y': jnp.float32(cy_s2)
+            'amp': self.source2_amp,
+            'R_sersic': random.uniform(key=keys[3], minval=0.1, maxval=0.5),     
+            'n_sersic' : random.uniform(key=keys[4], minval=0.5, maxval=1.5),
+            'e1': e1_s2,         
+            'e2': e2_s2,         
+            'center_x': cx_s2, 
+            'center_y': cy_s2
         }
-        source2_light_kwargs = [source2_SERSIC_kwargs]
+        sersic_light = LightModel(['SERSIC_ELLIPSE']).surface_brightness(*EuclidGenerator.SOURCE_PIXEL_COORDS, kwargs=[source2_SERSIC_kwargs])
+
+        n = 1
+        sigma = 0.3
+        rho = 20
+
+        k_grid = K_grid(shape=sersic_light.shape, scale=1)
+        P = P_Matern(k_grid.k, n, sigma, rho, k_zero=0)
+
+        scale = jnp.sqrt(P)
+        white_noise = random.normal(key=keys[5], shape=sersic_light.shape)
+        
+        pixels = jnp.fft.irfft2(pack_fft_values(white_noise*scale), s=scale.shape, norm="ortho")
+        pixels -= jnp.mean(pixels)
+        pixels /= jnp.std(pixels)
+
+        alpha = 0.6  # strength of perturbation
+        pixels = 1 + alpha * pixels
+
+        pixels = jnp.log1p(jnp.exp(alpha * pixels))
+        sersic_light = sersic_light * pixels
+
+        source2_light_kwargs = [{
+            'pixels' : sersic_light
+        }]
+
         return source2_light_kwargs
 
     def __sample_kwargs(self, key, image_index, lens_rotation=0):
@@ -447,7 +506,6 @@ class EuclidGenerator:
         mp_light_kwargs = [lens_light_kwargs, source1_light_kwargs, source2_light_kwargs]
 
         return lens_img, mp_mass_kwargs, mp_light_kwargs, eta
-
 
 
     def get_inverse_magnification(self, x, y, mass_kwargs, eta, plane):
@@ -506,14 +564,37 @@ class EuclidGenerator:
 
         return max(caustics, key=lambda curve: len(curve[0]))
 
-    def get_model(self, mass_kwargs, light_kwargs, eta, unconvolved=False) -> np.ndarray:
+    def get_model(self, mass_kwargs, light_kwargs, eta, unconvolved=False, source=None) -> np.ndarray:
 
-        model = self.LensImage.model(
-            kwargs_mass=mass_kwargs,
-            kwargs_light=light_kwargs,
-            eta_flat=eta,
-            unconvolved=unconvolved
-        )
+        if source is None:
+            model = self.LensImage.model(
+                kwargs_mass=mass_kwargs,
+                kwargs_light=light_kwargs,
+                eta_flat=eta,
+                unconvolved=unconvolved
+            )
+
+        elif source == 1:
+            light_kwargs_ = copy.deepcopy(light_kwargs)
+            light_kwargs_[2][0]['pixels'] *= 0.0   # zero source 1
+
+            model = self.LensImage.model(
+                kwargs_mass=mass_kwargs,
+                kwargs_light=light_kwargs_,
+                eta_flat=eta,
+                unconvolved=unconvolved
+            )
+
+        elif source == 2:
+            light_kwargs_ = copy.deepcopy(light_kwargs)
+            light_kwargs_[1][0]['pixels'] *= 0.0   # zero source 2
+
+            model = self.LensImage.model(
+                kwargs_mass=mass_kwargs,
+                kwargs_light=light_kwargs_,
+                eta_flat=eta,
+                unconvolved=unconvolved
+            )
 
         return model
 
@@ -847,7 +928,6 @@ class EuclidGenerator:
         plt.savefig("euclid_generator/presentation_figures/model_w_lens_notlog.png")
         plt.close()
 
-
     @staticmethod
     def big_grid():
         """this is the method I will use to generate final simulations"""
@@ -892,7 +972,6 @@ class EuclidGenerator:
         plt.savefig("euclid_generator/testing_images/full_grid.png")
         plt.close()
 
-
     @staticmethod
     def get_final_sim():
         """this is the method I will use to generate final simulations"""
@@ -902,7 +981,7 @@ class EuclidGenerator:
             lens_files = np.array([item.name for item in entries])
         
         # n_files = len(lens_files)
-        n_files = 5
+        n_files = 1
 
         gen = EuclidGenerator(
             lens_folder_path=lens_folder_path,
@@ -925,12 +1004,46 @@ class EuclidGenerator:
             
                 # fits.writeto(f"euclid_generator/testing_fits/model{i}_{r}.fits", np.array(model))
 
+    @staticmethod
+    def testing1():
+        lens_folder_path = "euclid_generator/lrg_used_for_karina_sim/"
+        
+        n_files = 100
+        gen = EuclidGenerator(
+            lens_folder_path=lens_folder_path,
+            fov=15,
+            lens_amp=800.0,
+            source1_amp=10.0,
+            source2_amp=10.0
+        )
+
+        extent = gen.pixel_grid.extent
+        for i in tqdm(range(n_files)):
+            for r in range(0, 4):
+                lens_img, mass_kwargs, light_kwargs, eta = gen.__sample_kwargs(random.PRNGKey(i*4+r), i, lens_rotation=r)
+                model_s1 = gen.get_model(mass_kwargs, light_kwargs, eta, source=1)
+                model_s2 = gen.get_model(mass_kwargs, light_kwargs, eta, source=2)
+
+                lens_img /= np.max(lens_img[70:90, 70:90])
+                model_s1 /= 3 * np.max(model_s1)
+                model_s2 /= 5 * np.max(model_s2)
+                
+                plt.imshow(lens_img + model_s1 + model_s2, extent=extent)
+                plt.savefig(f"euclid_generator/testing_images/model({i},{r}).png")
+                plt.close()
+
+                plt.imshow(lens_img + model_s1 + model_s2, extent=extent, norm="log")
+                plt.savefig(f"euclid_generator/testing_images/model({i},{r})_log.png")
+                plt.close()
+
+
 
     @staticmethod
     def main():
         # EuclidGenerator.get_final_sim()
         # EuclidGenerator.generate_preso_figures2()
-        EuclidGenerator.big_grid()
+        # EuclidGenerator.big_grid()
+        EuclidGenerator.testing1()
         
 
 EuclidGenerator.main()
