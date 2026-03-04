@@ -30,7 +30,7 @@ from herculens.MassModel.mass_model_multiplane import MPMassModel
 from herculens.LightModel.light_model_multiplane import MPLightModel
 from herculens.LensImage.lens_image_multiplane import MPLensImage
 
-from correlated_noise import K_grid, P_Matern, pack_fft_values
+from euclid_generator.correlated_noise import K_grid, P_Matern, pack_fft_values
 
 import os
 from tqdm import tqdm
@@ -45,8 +45,11 @@ class EuclidGenerator:
 
     THETA_PDF_FILEPATH = "euclid_generator/data/theta_pdf.npy"
     ETA_PDF_FILEPATH = "euclid_generator/data/eta_pdf.npy"
+    LENS_REDSHIFT_FILEPATH = "euclid_generator/data/lens_phr_pdf.npy"
+    S1_REDSHIFT_FILEPATH = "euclid_generator/data/source1_phr_pdf.npy"
+    S2_REDSHIFT_FILEPATH = "euclid_generator/data/source2_phr_pdf.npy"
 
-    def __init__(self, lens_folder_path: str, fov: float = 15.0, *, exposure_time : float = 600.0, lens_amp: float = 1.0, source1_amp: float = 1.0, source2_amp:float = 1.0) -> None:
+    def __init__(self, fov: float = 10.0, *, lens_folder_path: str = "euclid_generator/lrg_in/", exposure_time : float = 600.0, lens_amp: float = 1.0, source1_amp: float = 1.0, source2_amp:float = 1.0) -> None:
         """
         Initialise a generator class. This class with generate a number of images for euclid dspl discovery
         """
@@ -179,7 +182,7 @@ class EuclidGenerator:
     """generator methods"""
         
     @staticmethod
-    def __get_shape_of_source(source_img, threshold=0.1):
+    def __get_shape_of_lens(source_img, threshold=0.1):
         """
         Calculates the axis ratio and position angle from the image of a source, returns as (e1, e2) ellipticity parameters.
 
@@ -218,10 +221,8 @@ class EuclidGenerator:
         major, minor = jnp.sqrt(evals)
         axis_ratio = minor / major
         pos_angle = jnp.arctan2(evecs[1, 0], evecs[0, 0])  # radians
-        
-        e1_src, e2_src = param_util.phi_q2_ellipticity(pos_angle, axis_ratio)
 
-        return e1_src, e2_src
+        return pos_angle, axis_ratio
 
     @staticmethod
     def __sample_from_pdf(pdf_filepath, key):
@@ -237,44 +238,6 @@ class EuclidGenerator:
 
         return samples
     
-    @staticmethod
-    def __sample_point_in_polygon_triangulation(vertices, key):
-        # Triangulate polygon
-        tri = Delaunay(vertices)
-
-        triangles = vertices[tri.simplices]  # shape (n_tri, 3, 2)
-
-        # Compute triangle areas
-        v0 = triangles[:, 0]
-        v1 = triangles[:, 1]
-        v2 = triangles[:, 2]
-
-        areas = 0.5 * np.abs(
-            (v1[:,0]-v0[:,0])*(v2[:,1]-v0[:,1]) -
-            (v2[:,0]-v0[:,0])*(v1[:,1]-v0[:,1])
-        )
-
-        # Choose triangle weighted by area
-        probs = areas / areas.sum()
-        idx = np.random.choice(len(triangles), p=probs)
-
-        triangle = triangles[idx]
-
-        # Sample uniformly inside triangle
-        keys = random.split(key, 2)
-        r1 = random.uniform(keys[0], minval=0.0, maxval=1.0)
-        r2 = random.uniform(keys[1], minval=0.0, maxval=1.0)
-
-        sqrt_r1 = np.sqrt(r1)
-
-        point = (
-            (1 - sqrt_r1) * triangle[0] +
-            sqrt_r1 * (1 - r2) * triangle[1] +
-            sqrt_r1 * r2 * triangle[2]
-        )
-
-        return point
-
     @staticmethod
     def __sample_point_in_polygon_rejection_sampling(vertices, key):
     
@@ -307,43 +270,46 @@ class EuclidGenerator:
 
     FAUX_LENS_IMG = jnp.zeros((150,150))
 
-    def __sample_lens_kwargs(self, key, image_index, lens_rotation) -> tuple[jnp.ndarray, list[dict[str, float]], list[dict[str, float]]]:
+    def __sample_lens_kwargs(self, key, image_index, lens_rotation):
         """
-        Samples kwargs for the lens model based on the image
+        Sample lens kwargs based on lrg image provided by image_index.
 
-        Returns
-        -------
-        lens_light_kwargs : list[dict[str : float]]
-        
-        lens_mass_kwargs : list[dict[str : float]]
+        Parameters
+        -----------
+        key : random.PRNGKey
+            key for sampling einstein radius, EPL slope, axis ratio and shear
+        image_index : int
+            index for picking the image to use as foreground
+        lens_rotation: int
+            how many times should we 
         """
-        keys = random.split(key, 4)
+        keys = random.split(key, 5)
 
         with fits.open(self.lens_folder_path + self.lens_files[image_index]) as hdul:
             img = jnp.asarray(hdul[1].data, dtype=jnp.float32) # type: ignore
-            rms = np.asarray(hdul[3].data, dtype=jnp.float32) # type: ignore
 
         if lens_rotation in [1, 2, 3]:
             img = jnp.rot90(img, k=lens_rotation)
-            rms = np.rot90(rms, k=lens_rotation)
 
         lens_light_kwargs = [{
             "pixels" : EuclidGenerator.FAUX_LENS_IMG
         }]
         
-        # Take the center of the image and get shape of source ( assumes that center is at (0,0) )
-        e1_lens, e2_lens = EuclidGenerator.__get_shape_of_source(img[70:90,70:90])
+        pos_angle, axis_ratio = EuclidGenerator.__get_shape_of_lens(img[70:90,70:90])
+        axis_ratio = random.uniform(key=keys[0], minval=axis_ratio, maxval=1.0)
+        e1_lens, e2_lens = param_util.phi_q2_ellipticity(pos_angle, axis_ratio)
+
         lens_EPL_kwargs = {
-            'theta_E' : EuclidGenerator.__sample_from_pdf(EuclidGenerator.THETA_PDF_FILEPATH, keys[0]), 
-            'gamma': random.uniform(key=keys[1], minval=1.7, maxval=2.3),
+            'theta_E' : EuclidGenerator.__sample_from_pdf(EuclidGenerator.THETA_PDF_FILEPATH, keys[1]), 
+            'gamma': random.uniform(key=keys[2], minval=1.7, maxval=2.3),
             'e1': e1_lens,
             'e2': e2_lens,
             'center_x': 0.0,
             'center_y': 0.0
         }
         lens_shear_kwargs = {
-            'gamma1': random.uniform(key=keys[2], minval=-0.3, maxval=0.3),
-            'gamma2': jnp.float32(random.uniform(key=keys[3], minval=-0.3, maxval=0.3)),
+            'gamma1': random.uniform(key=keys[3], minval=-0.3, maxval=0.3), 
+            'gamma2': random.uniform(key=keys[4], minval=-0.3, maxval=0.3),
             'ra_0': lens_EPL_kwargs['center_x'],
             'dec_0': lens_EPL_kwargs['center_y'],
         }
@@ -352,28 +318,9 @@ class EuclidGenerator:
         return self.lens_amp*img, lens_mass_kwargs, lens_light_kwargs
     
     def __sample_s1_kwargs(self, key, tangential_caustic):
-        """
-        Samples kwargs for the lens model based on the image
 
-        Returns
-        -------
-        lens_light_kwargs : list[dict[str : float]]
-        
-        lens_mass_kwargs : list[dict[str : float]]
-        """
         keys = random.split(key, 10)
 
-        # method 1: #
-        # downscaling_factor = 2
-        # xmin = jnp.min(tangential_caustic[:, 0])/downscaling_factor
-        # xmax = jnp.max(tangential_caustic[:, 0])/downscaling_factor
-        # ymin = jnp.min(tangential_caustic[:, 1])/downscaling_factor
-        # ymax = jnp.max(tangential_caustic[:, 1])/downscaling_factor
-
-        # method 2: #
-        # cx_s1, cy_s1 = EuclidGenerator.__sample_point_in_polygon_triangulation(tangential_caustic, keys[3])
- 
-        # method 3: #
         cx_s1, cy_s1 = EuclidGenerator.__sample_point_in_polygon_rejection_sampling(tangential_caustic, keys[0])
         
         source1_SIS_kwargs = {
@@ -421,7 +368,7 @@ class EuclidGenerator:
         pixels -= jnp.mean(pixels)
         pixels /= jnp.std(pixels)
 
-        alpha = 0.6  # strength of perturbation
+        alpha = 1  # strength of perturbation
         pixels = 1 + alpha * pixels
 
         pixels = jnp.log1p(jnp.exp(alpha * pixels))
@@ -468,7 +415,7 @@ class EuclidGenerator:
         pixels -= jnp.mean(pixels)
         pixels /= jnp.std(pixels)
 
-        alpha = 0.6  # strength of perturbation
+        alpha = 1  # strength of perturbation
         pixels = 1 + alpha * pixels
 
         pixels = jnp.log1p(jnp.exp(alpha * pixels))
@@ -480,7 +427,8 @@ class EuclidGenerator:
 
         return source2_light_kwargs
 
-    def __sample_kwargs(self, key, image_index, lens_rotation=0):
+
+    def sample_kwargs(self, key, image_index, lens_rotation=0):
         """
         sample all kwargs for next random generation of lenses
         """
@@ -506,7 +454,6 @@ class EuclidGenerator:
         mp_light_kwargs = [lens_light_kwargs, source1_light_kwargs, source2_light_kwargs]
 
         return lens_img, mp_mass_kwargs, mp_light_kwargs, eta
-
 
     def get_inverse_magnification(self, x, y, mass_kwargs, eta, plane):
         A = self.mass_model.A( x=x, y=y, kwargs=mass_kwargs, eta_flat=eta )
@@ -610,408 +557,13 @@ class EuclidGenerator:
         return sim
 
     @staticmethod
-    def generate_preso_figures1(key=0, i=2000):
-        s1_amp = 160
-        s2_amp = 160
-        gen = EuclidGenerator("euclid_generator/lrg_used_for_karina_sim/", 15, lens_amp=1, source1_amp=s1_amp, source2_amp=s2_amp)
-        # 6
-        mass_kwargs, light_kwargs, eta = gen.__sample_kwargs(random.PRNGKey(key), i) # 22, 1000, 2000 are good ones
-
-        x_grid, y_grid = gen.pixel_grid.pixel_coordinates
-        lens_img, s1_img, s2_img = gen.light_model.surface_brightness(
-            [x_grid, x_grid, x_grid], 
-            [y_grid, y_grid, y_grid], 
-            light_kwargs,
-            [x_grid, x_grid, x_grid], 
-            [y_grid, y_grid, y_grid]
-        )
-
-        # --- lens images --- #
-        
-        plt.imshow(lens_img, norm='symlog', extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("lens image log scale")
-        plt.savefig("euclid_generator/presentation_figures/lens_log.png")
-
-        plt.close()
-
-        plt.imshow(lens_img, extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("LRG lens image")
-        plt.savefig("euclid_generator/presentation_figures/lens.png")
-
-        plt.close()
-
-        # --- source images --- #
-        x_vec = np.linspace(-15, 15, 300)
-        y_vec = np.linspace(-15, 15, 300)
-        X, Y = np.meshgrid(x_vec, y_vec)
-        mu_1 = gen.get_inverse_magnification(X, Y, mass_kwargs, eta, plane=1)
-        mu_2 = gen.get_inverse_magnification(X, Y, mass_kwargs, eta, plane=2)
-
-        plt.imshow(mu_1, extent=gen.pixel_grid.extent, cmap="PuOr_r", norm="symlog")
-        plt.colorbar()
-        plt.savefig("euclid_generator/presentation_figures/magnification_s1.png")
-        plt.close()
-
-        plt.imshow(mu_2, extent=gen.pixel_grid.extent, cmap="PuOr_r", norm="symlog")
-        plt.colorbar()
-        plt.savefig("euclid_generator/presentation_figures/magnification_s2.png")
-        plt.close()
-
-        tang = np.array(gen.get_tangential_caustic(mass_kwargs, eta, 1))
-        tang2 = np.array(gen.get_tangential_caustic(mass_kwargs, eta, 2))
-
-        plt.plot(*tang.T, label="tangential caustic s1")
-        plt.plot(*tang2.T, label="tangential caustic s2")
-        plt.axis('equal')
-        plt.legend()
-        plt.savefig("euclid_generator/presentation_figures/caustics_empty.png")
-        plt.close()
-
-        s1_cx = light_kwargs[1][0]['center_x']
-        s1_cy = light_kwargs[1][0]['center_y']
-        s2_cx = light_kwargs[2][0]['center_x']
-        s2_cy = light_kwargs[2][0]['center_y']
-
-        plt.plot(*tang.T, label="tangential caustic s1")
-        plt.plot(*tang2.T, label="tangential caustic s2")
-        plt.scatter(s1_cx, s1_cy, label="source 1 position", marker='x')
-        plt.scatter(s2_cx, s2_cy, label="source 2 position", marker='x')
-        plt.legend()
-        plt.title("source positions")
-        plt.axis('equal')
-        plt.savefig("euclid_generator/presentation_figures/caustics_w_source_positions.png")
-
-        plt.close()
-        
-
-        plt.plot(*tang2.T, label="tangenntial caustic")
-        plt.scatter(s2_cx, s2_cy, label="source 2 position", marker='x')
-        plt.legend()
-        plt.axis('equal')
-        plt.savefig("euclid_generator/presentation_figures/caustics_w_s2_position.png")
-
-        plt.close()
-
-        plt.plot(*tang.T, label="tangenntial caustic")
-        plt.scatter(s1_cx, s1_cy, label="source 1 position", marker='x')
-        plt.legend()
-        plt.axis('equal')
-        plt.savefig("euclid_generator/presentation_figures/caustics_w_s1_position.png")
-
-        plt.close()
-
-        _, s1_img, s2_img = gen.light_model.surface_brightness(
-            [x_grid]*3, 
-            [y_grid]*3, 
-            light_kwargs,
-            [x_grid]*3, 
-            [y_grid]*3
-        )
-
-        plt.imshow(s1_img, norm="log", extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("source 1 light profile (log scale)")
-        plt.savefig("euclid_generator/presentation_figures/s1_log.png")
-
-        plt.close()
-
-        plt.imshow(s2_img, norm="log", extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("source 2 light profile (log scale)")
-        plt.savefig("euclid_generator/presentation_figures/s2_log.png")
-
-        plt.close()
-
-        plt.imshow(s1_img, extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("source 1 light profile")
-        plt.savefig("euclid_generator/presentation_figures/s1.png")
-
-        plt.close()
-
-        plt.imshow(s2_img, extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("source 2 light profile")
-        plt.savefig("euclid_generator/presentation_figures/s2.png")
-
-        plt.close()
-
-        light_kwargs[0] = [{
-            "pixels" : 0 * light_kwargs[0][0]['pixels']
-        }]
-
-        model = gen.get_model(mass_kwargs, light_kwargs, eta, unconvolved=False)
-        plt.imshow(model, extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("modelled sources")
-        plt.savefig("euclid_generator/presentation_figures/model_no_lens.png")
-        plt.close()
-        
-        model = gen.get_model(mass_kwargs, light_kwargs, eta, unconvolved=True)
-        plt.imshow(model, extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("modelled sources unconvolved")
-        plt.savefig("euclid_generator/presentation_figures/model_no_lens_unconvolved.png")
-        plt.close()
-
-
-        light_kwargs[2][0]["amp"] = 0.0
-
-        model = gen.get_model(mass_kwargs, light_kwargs, eta, unconvolved=False)
-        plt.imshow(model, extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("modelled source 1")
-        plt.savefig("euclid_generator/presentation_figures/model_no_lens_s1.png")
-        plt.close()
-
-        light_kwargs[2][0]["amp"] = s2_amp
-        light_kwargs[1][0]["amp"] = 0.0
-
-        model = gen.get_model(mass_kwargs, light_kwargs, eta, unconvolved=False)
-        plt.imshow(model, extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("modelled source 2")
-        plt.savefig("euclid_generator/presentation_figures/model_no_lens_s2.png")
-        plt.close()
-
-        light_kwargs[1][0]["amp"] = s1_amp
-        light_kwargs[2][0]["amp"] = s2_amp
-        model = gen.get_model(mass_kwargs, light_kwargs, eta, unconvolved=False)
-        plt.imshow(model + lens_img, extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("modelled DSPL")
-        plt.savefig("euclid_generator/presentation_figures/everything.png")
-
-        plt.close()
-        
-        plt.imshow(model + lens_img, norm="log", extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.title("modelled DSPL (log scale)")
-        plt.savefig("euclid_generator/presentation_figures/everything_log.png")
-
-    @staticmethod
-    def generate_preso_figures2():
-        gen = EuclidGenerator(
-            lens_folder_path="euclid_generator/lrg_used_for_karina_sim/",
-            fov=15,
-            lens_amp=4.0,
-            source1_amp=150.0,
-            source2_amp=120.0
-        )
-
-        x_grid, y_grid = gen.pixel_grid.pixel_coordinates
-        lens_img, mass_kwargs, light_kwargs, eta = gen.__sample_kwargs(key=random.PRNGKey(16382), image_index=2000, lens_rotation=3)
-        
-        print(f"number of images: {gen.n_sims/4}")
-        print(f"number of sims: {gen.n_sims}")
-
-
-        # 1. take real image of RLG
-        plt.imshow(lens_img, extent=gen.pixel_grid.extent, norm="symlog") # type: ignore
-        plt.colorbar()
-        plt.savefig("euclid_generator/presentation_figures/foreground_img.png")
-        plt.close()
-
-        # 2. fit ellipticity
-        lens_EPL_kwargs = [mass_kwargs[0][0]]
-        lens_EPL_model = MassModel(["EPL"])
-        kappa = lens_EPL_model.kappa(x_grid, y_grid, lens_EPL_kwargs)
-
-        plt.imshow(lens_img, extent=gen.pixel_grid.extent, norm="symlog") # type: ignore
-        plt.colorbar()
-        plt.contour(np.log(kappa), extent=gen.pixel_grid.extent, colors="white") # type: ignore
-        plt.savefig("euclid_generator/presentation_figures/foreground_img_with_model_fit.png")
-        plt.close()
-
-        # 3. sample mass profile (do I need these?)
-        lens_mass_kwargs = mass_kwargs[0]
-        lens_mass_model = MassModel(["EPL", "SHEAR"])
-        kappa = lens_mass_model.kappa(x_grid, y_grid, lens_mass_kwargs)
-
-        plt.imshow(kappa, extent=gen.pixel_grid.extent, norm="log") # type: ignore
-        plt.colorbar()
-        plt.contour(np.log(kappa), extent=gen.pixel_grid.extent, colors="white") # type: ignore
-        plt.savefig("euclid_generator/presentation_figures/lens_kappa.png")
-        plt.close()
-
-        # 4. Compute tangential caustics on s1 plane
-        tan_caustic_s1 = np.array(gen.get_tangential_caustic(mass_kwargs=mass_kwargs, eta=eta, plane=1))
-
-        plt.plot(*tan_caustic_s1.T, label="s1 tangential caustic", c="orange")
-        plt.axis('equal')
-        plt.savefig("euclid_generator/presentation_figures/s1_tangential_caustic.png")
-        plt.close()
-
-        # 5. Randomly place s1 in caustic
-        s1_cx = mass_kwargs[1][0]['center_x']
-        s1_cy = mass_kwargs[1][0]['center_y']
-        
-        plt.plot(*tan_caustic_s1.T, label="s1 tangential caustic", c="orange")
-        plt.scatter(s1_cx, s1_cy, marker="X", label="s1 position", c="orange")
-        plt.axis('equal')
-        plt.savefig("euclid_generator/presentation_figures/s1_tangential_caustic_with_s1_position.png")
-        plt.close()
-
-        # 6. Sample s1 mass & light profiles
-        s1_light_kwargs = light_kwargs[1]
-        s1_light_model = LightModel(["SERSIC_ELLIPSE"])
-        s1_surface_brightness = s1_light_model.surface_brightness(x_grid, y_grid, s1_light_kwargs)
-        
-        s1_mass_kwargs = mass_kwargs[1]
-        s1_mass_model = gen.mass_model.mass_models[1]
-        s1_kappa = s1_mass_model.kappa(x_grid, y_grid, s1_mass_kwargs)
-
-        plt.imshow(s1_surface_brightness, extent=gen.pixel_grid.extent, norm="log") # type: ignore
-        plt.plot(*tan_caustic_s1.T, label="s1 tangential caustic", c="orange")
-        plt.colorbar()
-        plt.savefig("euclid_generator/presentation_figures/s1_light_model.png")
-        plt.close()
-
-        plt.imshow(s1_surface_brightness, extent=gen.pixel_grid.extent, norm="log") # type: ignore
-        plt.colorbar()
-        plt.plot(*tan_caustic_s1.T, label="s1 tangential caustic", c="orange")
-        plt.contour(np.log(s1_kappa), extent=gen.pixel_grid.extent, colors="white", levels=3) # type: ignore
-        plt.savefig("euclid_generator/presentation_figures/s1_mass_light_models.png")
-        plt.close()
-
-        # 7. compute s2 caustics
-        tan_caustic_s2 = np.array(gen.get_tangential_caustic(mass_kwargs=mass_kwargs, eta=eta, plane=2))
-
-        plt.plot(*tan_caustic_s2.T, label="s2 tangential caustic", c="orange")
-        plt.axis('equal')
-        plt.savefig("euclid_generator/presentation_figures/s2_tangential_caustic.png")
-        plt.close()
-
-        s2_cx = light_kwargs[2][0]['center_x']
-        s2_cy = light_kwargs[2][0]['center_y']
-        
-        plt.plot(*tan_caustic_s2.T, label="s2 tangential caustic", c="orange")
-        plt.scatter(s2_cx, s2_cy, marker="X", label="s2 position", c="orange")
-        plt.axis('equal')
-        plt.savefig("euclid_generator/presentation_figures/s2_tangential_caustic_with_s2_position.png")
-        plt.close()
-
-        # 8. generate s2 light
-        s2_light_model = gen.light_model.light_models[2]
-        s2_surface_brightness = s2_light_model.surface_brightness(x_grid, y_grid, light_kwargs[2]) # type: ignore
-        
-        plt.imshow(s2_surface_brightness, extent=gen.pixel_grid.extent, norm="log") # type: ignore
-        plt.colorbar()
-        plt.plot(*tan_caustic_s2.T, label="s2 tangential caustic", c="orange")
-        plt.savefig("euclid_generator/presentation_figures/s2_light_model.png")
-        plt.close()
-
-        # 9. model lens with no lens light (get archs)
-        light_kwargs[0] = [{
-            "pixels" : 0 * light_kwargs[0][0]['pixels']
-        }]
-
-        model = gen.get_model(mass_kwargs, light_kwargs, eta, unconvolved=True)
-        plt.imshow(model, extent=gen.pixel_grid.extent, norm="symlog")
-        plt.colorbar()
-        plt.savefig("euclid_generator/presentation_figures/model_no_lens.png")
-        plt.close()
-
-        # 10. convolve, paint on top of lens
-        model = gen.get_model(mass_kwargs, light_kwargs, eta, unconvolved=False)
-        final = model + lens_img
-
-        plt.imshow(final, extent=gen.pixel_grid.extent, norm="symlog")
-        plt.colorbar()
-        plt.savefig("euclid_generator/presentation_figures/model_w_lens.png")
-        plt.close()
-
-        plt.imshow(final, extent=gen.pixel_grid.extent)
-        plt.colorbar()
-        plt.savefig("euclid_generator/presentation_figures/model_w_lens_notlog.png")
-        plt.close()
-
-    @staticmethod
-    def big_grid():
-        """this is the method I will use to generate final simulations"""
-        
-        lens_folder_path = "euclid_generator/lrg_used_for_karina_sim/"
-        n_files = 6
-
-        gen = EuclidGenerator(
-            lens_folder_path=lens_folder_path,
-            fov=15,
-            lens_amp=80.0,
-            source1_amp=150.0,
-            source2_amp=120.0
-        )
-
-        extent = gen.pixel_grid.extent
-
-        fig, axes = plt.subplots(n_files, 4, figsize=(4*4, 4*n_files))
-
-        # Ensure axes is always 2D
-        if n_files == 1:
-            axes = np.expand_dims(axes, axis=0)
-
-        start=30
-        for i in tqdm(range(n_files)):
-            for r in range(4):
-
-                lens_img, mass_kwargs, light_kwargs, eta = gen.__sample_kwargs(
-                    random.PRNGKey((i+start)*4 + r),
-                    i+start,
-                    lens_rotation=r
-                )
-
-                model = gen.get_model(mass_kwargs, light_kwargs, eta)
-
-                ax = axes[i, r]
-                im = ax.imshow(lens_img + model, extent=extent, norm="symlog")
-                ax.set_xticks([])
-                ax.set_yticks([])
-
-        plt.tight_layout()
-        plt.savefig("euclid_generator/testing_images/full_grid.png")
-        plt.close()
-
-    @staticmethod
-    def get_final_sim():
-        """this is the method I will use to generate final simulations"""
-        
-        lens_folder_path = "euclid_generator/lrg_used_for_karina_sim/"
-        with os.scandir(lens_folder_path) as entries:
-            lens_files = np.array([item.name for item in entries])
-        
-        # n_files = len(lens_files)
-        n_files = 1
-
-        gen = EuclidGenerator(
-            lens_folder_path=lens_folder_path,
-            fov=15,
-            lens_amp=80.0,
-            source1_amp=150.0,
-            source2_amp=120.0
-        )
-
-        extent = gen.pixel_grid.extent
-        for i in tqdm(range(n_files)):
-            for r in range(0, 4):
-                lens_img, mass_kwargs, light_kwargs, eta = gen.__sample_kwargs(random.PRNGKey(i*4+r), i, lens_rotation=r)
-                model = gen.get_model(mass_kwargs, light_kwargs, eta)
-                
-                plt.imshow(lens_img + model, extent=extent, norm="symlog")
-                plt.colorbar()
-                plt.savefig(f"euclid_generator/testing_images/model({i},{r}).png")
-                plt.close()
-            
-                # fits.writeto(f"euclid_generator/testing_fits/model{i}_{r}.fits", np.array(model))
-
-    @staticmethod
-    def testing1():
-        lens_folder_path = "euclid_generator/lrg_used_for_karina_sim/"
+    def testing():
+        lens_folder_path = "euclid_generator/lrg_in/"
         
         n_files = 100
         gen = EuclidGenerator(
             lens_folder_path=lens_folder_path,
-            fov=15,
+            fov=10,
             lens_amp=800.0,
             source1_amp=10.0,
             source2_amp=10.0
@@ -1020,7 +572,7 @@ class EuclidGenerator:
         extent = gen.pixel_grid.extent
         for i in tqdm(range(n_files)):
             for r in range(0, 4):
-                lens_img, mass_kwargs, light_kwargs, eta = gen.__sample_kwargs(random.PRNGKey(i*4+r), i, lens_rotation=r)
+                lens_img, mass_kwargs, light_kwargs, eta = gen.sample_kwargs(random.PRNGKey(i*4+r), i, lens_rotation=r)
                 model_s1 = gen.get_model(mass_kwargs, light_kwargs, eta, source=1)
                 model_s2 = gen.get_model(mass_kwargs, light_kwargs, eta, source=2)
 
@@ -1040,10 +592,8 @@ class EuclidGenerator:
 
     @staticmethod
     def main():
-        # EuclidGenerator.get_final_sim()
-        # EuclidGenerator.generate_preso_figures2()
-        # EuclidGenerator.big_grid()
-        EuclidGenerator.testing1()
+        # EuclidGenerator.testing()
+        pass
         
 
 EuclidGenerator.main()
